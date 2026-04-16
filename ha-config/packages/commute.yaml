@@ -70,7 +70,7 @@ input_text:
     max: 40
   commute_morning_summary:
     name: Commute morning preview (last Claude output)
-    max: 1000
+    max: 255
   commute_last_alert_fingerprint:
     # Hash of (route, date, hour-bucket) so a recurring disruption within the
     # same hour is only pushed once, not every poll cycle.
@@ -467,7 +467,7 @@ automation:
             - condition: template
               value_template: "{{ repeat.index >= 3 }}"
 
-      # Store the summary (truncate to input_text max of 1000).
+      # Store the summary (truncate to input_text max of 255).
       - service: input_text.set_value
         target:
           entity_id: input_text.commute_morning_summary
@@ -477,7 +477,7 @@ automation:
                 if claude_resp is defined
                 and claude_resp.content is defined
                 and claude_resp.content
-                else 'No preview available — Claude API failed after 3 retries.')[:1000] }}
+                else 'No preview available — Claude API failed after 3 retries.')[:255] }}
 
       # Parse ALARM=HH:MM out of the Claude response; fall back to alarm_fallback.
       # Record a flag so the user knows whether the alarm is Claude's or the fallback.
