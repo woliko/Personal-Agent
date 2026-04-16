@@ -465,36 +465,45 @@ automation:
             - if:
                 - condition: template
                   value_template: >-
-                    {{ (claude_resp is not defined or claude_resp.content is not defined)
+                    {{ (claude_resp is not defined
+                        or claude_resp.content is not defined
+                        or claude_resp.content.content is not defined)
                        and repeat.index < 3 }}
               then:
                 - delay: "00:00:10"
           until:
             - condition: template
               value_template: >-
-                {{ (claude_resp is defined and claude_resp.content is defined)
+                {{ (claude_resp is defined
+                    and claude_resp.content is defined
+                    and claude_resp.content.content is defined)
                    or repeat.index >= 3 }}
 
       # Store the summary (truncate to input_text max of 255).
+      # rest_command wraps the Anthropic response as {status, content}, where
+      # `content` is the parsed response body. Claude's text lives at
+      # claude_resp.content.content[0].text (the first content block).
       - service: input_text.set_value
         target:
           entity_id: input_text.commute_morning_summary
         data:
           value: >-
-            {{ (claude_resp.content[0].text
+            {{ (claude_resp.content.content[0].text
                 if claude_resp is defined
                 and claude_resp.content is defined
-                and claude_resp.content
+                and claude_resp.content.content is defined
+                and claude_resp.content.content
                 else 'No preview available — Claude API failed after 3 retries.')[:255] }}
 
       # Parse ALARM=HH:MM out of the Claude response; fall back to alarm_fallback.
       # Record a flag so the user knows whether the alarm is Claude's or the fallback.
       - variables:
           claude_text: >-
-            {{ claude_resp.content[0].text
+            {{ claude_resp.content.content[0].text
                if claude_resp is defined
                and claude_resp.content is defined
-               and claude_resp.content
+               and claude_resp.content.content is defined
+               and claude_resp.content.content
                else '' }}
           alarm_match: "{{ claude_text | regex_findall('ALARM=(\\d{2}:\\d{2})') }}"
           alarm_hhmm: "{{ alarm_match[0] if alarm_match else alarm_fallback }}"
