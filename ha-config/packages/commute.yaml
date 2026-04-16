@@ -421,6 +421,10 @@ automation:
       - delay: "00:00:05"
 
       # Retry the Claude call up to 3 times with 10s back-off.
+      # The until condition exits the loop either when we have a valid
+      # response or when we've hit 3 attempts — we must NOT use `stop:` here
+      # because that would abort the whole automation, skipping the downstream
+      # steps that store the summary, parse the alarm, and reply to Telegram.
       - repeat:
           sequence:
             - service: rest_command.claude_api
@@ -457,15 +461,19 @@ automation:
                   Suggest the best route, the alarm time, and a one-line rationale.
               response_variable: claude_resp
               continue_on_error: true
+            # Only sleep between retries — not after success or the last attempt.
             - if:
                 - condition: template
-                  value_template: "{{ claude_resp is defined and claude_resp.content is defined }}"
+                  value_template: >-
+                    {{ (claude_resp is not defined or claude_resp.content is not defined)
+                       and repeat.index < 3 }}
               then:
-                - stop: "got response"
-            - delay: "00:00:10"
+                - delay: "00:00:10"
           until:
             - condition: template
-              value_template: "{{ repeat.index >= 3 }}"
+              value_template: >-
+                {{ (claude_resp is defined and claude_resp.content is defined)
+                   or repeat.index >= 3 }}
 
       # Store the summary (truncate to input_text max of 255).
       - service: input_text.set_value
