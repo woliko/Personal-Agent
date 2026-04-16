@@ -17,7 +17,7 @@
 │  - Companion app = push notifs      │
 │  - Device control = heat pump, etc  │
 │  IP: 192.168.42.42 (VLAN 42)       │
-│  Tailscale: 100.71.189.93          │
+│  Tailscale: 100.x.y.z (Tailnet)    │
 └─────────────────────────────────────┘
 ```
 
@@ -47,4 +47,4 @@
 - Router: UniFi Dream Machine SE (dual WAN)
 - Camera: UniFi Bullet AI on VLAN 42
 - Pi cannot be reached via 192.168.* through Tailscale (hairpin limitation);
-  use Tailscale IP `100.71.189.93`.
+  use your Tailscale IP (`100.x.y.z` per your Tailnet).

@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Verify the bahn.expert HAFAS v2 API for all four commute routes.
+"""Verify the v6.db.transport.rest API for all four commute routes.
 
 Run this once from your laptop (or Pi via SSH add-on) before deploying the HA
-sensors.  It confirms:
-  1. Station names resolve correctly (or shows the EVA fallback to paste into
-     commute.yaml).
-  2. The JSON response shape matches what the HA value_templates expect.
-  3. Print the first 3 connections per route so you can eyeball correctness.
+sensors. It confirms:
+  1. EVA IDs resolve the expected station names via /locations.
+  2. /journeys returns the legs[] structure the HA value_templates expect.
+  3. Prints the first 3 connections per route so you can eyeball correctness.
 
 Usage:
-    pip install httpx
+    pip install -r requirements.txt
     python test_db_api.py
 """
 
@@ -28,38 +27,50 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-BASE = "https://bahn.expert/api/hafas/v2"
+BASE = "https://v6.db.transport.rest"
 
-# Routes matching commute.yaml — name first, EVA fallback if name fails.
+# EVA IDs are the source of truth — commute.yaml uses them directly in URLs.
+# Station names below are for logs only; the API is never queried by name.
+STATIONS: dict[str, str] = {
+    "8005292": "Solln",
+    "8000261": "München Hbf",
+    "8003336": "Kaufering",
+}
+
+# Routes matching commute.yaml.
 ROUTES: list[dict[str, str]] = [
-    {"from": "Solln", "to": "Kaufering", "label": "Morning A: Solln → Kaufering"},
-    {"from": "München Hbf", "to": "Kaufering", "label": "Morning B: Hbf → Kaufering"},
-    {"from": "Kaufering", "to": "München Hbf", "label": "Return C: Kaufering → Hbf"},
-    {"from": "Kaufering", "to": "Solln", "label": "Return D: Kaufering → Solln"},
+    {"from": "8005292", "to": "8003336", "label": "Morning A: Solln → Kaufering"},
+    {"from": "8000261", "to": "8003336", "label": "Morning B: Hbf → Kaufering"},
+    {"from": "8003336", "to": "8000261", "label": "Return C: Kaufering → Hbf"},
+    {"from": "8003336", "to": "8005292", "label": "Return D: Kaufering → Solln"},
 ]
 
-EVA_IDS: dict[str, str] = {
-    "Solln": "8005292",
-    "München Hbf": "8000261",
-    "Kaufering": "8003336",
-}
+
+def resolve_location(client: httpx.Client, eva_id: str) -> str | None:
+    """Look up an EVA ID via /locations?query=<id>. Returns the first match's name."""
+    resp = client.get(
+        f"{BASE}/locations",
+        params={"query": eva_id, "results": 1},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data:
+        return None
+    # /locations returns a list of location objects directly.
+    return data[0].get("name")
 
 
 def fetch_journeys(
     client: httpx.Client,
-    from_station: str,
-    to_station: str,
-    use_eva: bool = False,
+    from_eva: str,
+    to_eva: str,
+    results: int = 3,
 ) -> dict:
     """Call /journeys and return raw JSON."""
-    if use_eva:
-        from_station = EVA_IDS.get(from_station, from_station)
-        to_station = EVA_IDS.get(to_station, to_station)
-
-    url = f"{BASE}/journeys"
-    params = {"from": from_station, "to": to_station}
-    log.info("GET %s  params=%s", url, params)
-    resp = client.get(url, params=params, timeout=20)
+    params = {"from": from_eva, "to": to_eva, "results": results}
+    log.info("GET %s/journeys  params=%s", BASE, params)
+    resp = client.get(f"{BASE}/journeys", params=params, timeout=20)
     resp.raise_for_status()
     return resp.json()
 
@@ -81,49 +92,50 @@ def print_connection(idx: int, conn: Connection) -> None:
         f"  [{idx}] {dep.time_hhmm} → {arr.time_hhmm}  "
         f"({trains})  {delay_str}{cancel_str}"
     )
-    if conn.messages:
-        for m in conn.messages:
+    for seg in segs:
+        for m in seg.messages:
             print(f"       ⚠ {m}")
 
 
+def verify_station_names(client: httpx.Client) -> bool:
+    """Confirm each EVA ID resolves to the expected station name."""
+    print(f"\n{'=' * 60}")
+    print("  Station ID resolution (/locations)")
+    print(f"{'=' * 60}")
+    all_ok = True
+    for eva, expected in STATIONS.items():
+        try:
+            actual = resolve_location(client, eva)
+        except Exception as exc:
+            log.error("Lookup failed for %s: %s", eva, exc)
+            all_ok = False
+            continue
+        if actual and expected.lower() in actual.lower():
+            print(f"  ✓ {eva}  →  {actual}")
+        else:
+            print(f"  ✗ {eva}  →  {actual!r} (expected to contain {expected!r})")
+            all_ok = False
+    return all_ok
+
+
 def test_route(client: httpx.Client, route: dict[str, str]) -> bool:
-    """Test one route. Returns True if name-based lookup works."""
+    """Test one route. Returns True if /journeys returned usable data."""
     print(f"\n{'=' * 60}")
     print(f"  {route['label']}")
     print(f"{'=' * 60}")
 
-    # Try station names first
     try:
-        raw = fetch_journeys(client, route["from"], route["to"], use_eva=False)
+        raw = fetch_journeys(client, route["from"], route["to"])
         connections = parse_journeys(raw)
-        log.info("Name-based lookup OK — %d journeys returned", len(connections))
+        log.info("Lookup OK — %d journeys returned", len(connections))
         for i, c in enumerate(connections[:3]):
             print_connection(i + 1, c)
-        return True
+        return bool(connections)
     except httpx.HTTPStatusError as exc:
-        log.warning(
-            "Name-based lookup failed (HTTP %d). Retrying with EVA IDs...",
-            exc.response.status_code,
-        )
-    except Exception as exc:
-        log.warning("Name-based lookup failed: %s. Retrying with EVA IDs...", exc)
-
-    # Fallback to EVA numbers
-    try:
-        raw = fetch_journeys(client, route["from"], route["to"], use_eva=True)
-        connections = parse_journeys(raw)
-        log.info("EVA-based lookup OK — %d journeys returned", len(connections))
-        for i, c in enumerate(connections[:3]):
-            print_connection(i + 1, c)
-
-        print(
-            f"\n  ⚠  Name lookup failed — paste these EVA IDs into commute.yaml:"
-        )
-        print(f"      {route['from']} = {EVA_IDS.get(route['from'], '?')}")
-        print(f"      {route['to']}   = {EVA_IDS.get(route['to'], '?')}")
+        log.error("Journeys lookup failed (HTTP %d): %s", exc.response.status_code, exc)
         return False
     except Exception as exc:
-        log.error("EVA-based lookup also failed: %s", exc)
+        log.error("Journeys lookup failed: %s", exc)
         return False
 
 
@@ -135,35 +147,38 @@ def print_json_paths(raw: dict) -> None:
         return
 
     j = journeys[0]
-    segs = j.get("segments", j.get("legs", []))
-    seg = segs[0] if segs else {}
+    legs = j.get("legs", [])
+    leg = legs[0] if legs else {}
+    line = leg.get("line") or {}
 
     print("\n  JSON paths used by commute.yaml value_templates:")
-    print(f"    journeys[0].segments[0].departure.time     = {seg.get('departure', {}).get('time', 'MISSING')}")
-    print(f"    journeys[0].segments[0].departure.delay    = {seg.get('departure', {}).get('delay', 'MISSING')}")
-    print(f"    journeys[0].segments[0].departure.platform = {seg.get('departure', {}).get('platform', 'MISSING')}")
-    print(f"    journeys[0].cancelled                      = {j.get('cancelled', 'MISSING')}")
-    print(f"    journeys[0].messages                       = {j.get('messages', 'MISSING')}")
-    print(f"    journeys[0].duration                       = {j.get('duration', 'MISSING')}")
+    print(f"    journeys[0].legs[0].departure         = {leg.get('departure', 'MISSING')}")
+    print(f"    journeys[0].legs[0].plannedDeparture  = {leg.get('plannedDeparture', 'MISSING')}")
+    print(f"    journeys[0].legs[0].departureDelay    = {leg.get('departureDelay', 'MISSING')}  (seconds)")
+    print(f"    journeys[0].legs[0].cancelled         = {leg.get('cancelled', 'MISSING')}")
+    print(f"    journeys[0].legs[0].line.name         = {line.get('name', 'MISSING')}")
+    print(f"    journeys[0].legs[0].remarks           = {leg.get('remarks', 'MISSING')}")
 
-    # Check for alternative key names
-    if "legs" in j and "segments" not in j:
-        print("\n  ⚠  Response uses 'legs' instead of 'segments'!")
-        print("     Update commute.yaml: segments → legs")
+    # If the API ever regresses to the old /segments name, flag it loudly.
+    if "segments" in j and "legs" not in j:
+        print("\n  ⚠  Response uses 'segments' instead of 'legs'!")
+        print("     Update commute.yaml: legs → segments")
 
 
 def main() -> None:
-    print("bahn.expert HAFAS v2 API — commute route verification")
+    print("v6.db.transport.rest — commute route verification")
     print(f"Base URL: {BASE}")
 
     all_ok = True
-    with httpx.Client() as client:
+    with httpx.Client(headers={"User-Agent": "personal-agent/1.0"}) as client:
+        if not verify_station_names(client):
+            all_ok = False
+
         for route in ROUTES:
-            name_ok = test_route(client, route)
-            if not name_ok:
+            if not test_route(client, route):
                 all_ok = False
 
-        # Inspect raw JSON structure on first route for path verification
+        # Inspect raw JSON structure on first route for path verification.
         print(f"\n{'=' * 60}")
         print("  JSON structure inspection (first route)")
         print(f"{'=' * 60}")
@@ -175,11 +190,11 @@ def main() -> None:
 
     print(f"\n{'=' * 60}")
     if all_ok:
-        print("  ✓ All routes resolved by station name.")
+        print("  ✓ All routes and station IDs verified.")
         print("    commute.yaml is ready to deploy as-is.")
     else:
-        print("  ⚠ Some routes needed EVA IDs (see above).")
-        print("    Update the station names in commute.yaml before deploying.")
+        print("  ⚠ Some routes failed (see above).")
+        print("    Fix before deploying commute.yaml.")
     print(f"{'=' * 60}\n")
 
     sys.exit(0 if all_ok else 1)

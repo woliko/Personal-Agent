@@ -33,8 +33,14 @@ See `ha-config/packages/commute.yaml` for the full list.
 
 ### API
 
-bahn.expert HAFAS v2 — free, no key.
-- Journeys: `https://bahn.expert/api/hafas/v2/journeys?from=STATION&to=STATION`
+[v6.db.transport.rest](https://v6.db.transport.rest) — free, no key,
+hafas-client v6 wrapper around Deutsche Bahn.
+- Journeys:  `https://v6.db.transport.rest/journeys?from=<evaId>&to=<evaId>&results=3`
+- Locations: `https://v6.db.transport.rest/locations?query=<name-or-eva>`
+- EVA IDs are pinned directly in `commute.yaml` (station names are never sent
+  to the API, so an upstream rename can't break the sensors).
+- `departureDelay` / `arrivalDelay` are in **seconds** — the template sensors
+  divide by 60 to convert to minutes.
 
 ---
 

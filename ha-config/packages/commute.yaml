@@ -6,28 +6,40 @@
 #   homeassistant:
 #     packages: !include_dir_named packages
 #
-# What this agent does:
-#  - Evening: user sends `/office` to the Telegram bot -> flips commute_day on,
-#    fetches tomorrow's trains (both routes), asks Claude to suggest an alarm,
-#    replies to Telegram with the preview.
-#  - Morning 05:00-07:00 (commute_day=on): polls Solln->Kaufering and
-#    Hbf->Kaufering every 5 min; disruption alerts via Telegram.
-#  - Return 16:00-18:00 (commute_day=on): polls Kaufering->Hbf and
-#    Kaufering->Solln every 10 min.
-#  - 19:00 daily: auto-resets commute_day to off (opt-in every evening).
+# API: v6.db.transport.rest (Deutsche Bahn REST wrapper, free, no key).
+#   Locations: https://v6.db.transport.rest/locations?query=<name>
+#   Journeys : https://v6.db.transport.rest/journeys?from=<evaId>&to=<evaId>&results=3
+# Station names are intentionally NOT used as URL params — EVA IDs are pinned
+# below so a name change upstream can't break the sensors.
 #
-# Routes (hardcoded per Phase 0 spec — personal-use first):
-#   Morning   A: Solln -> Kaufering           (direct)
-#             B: Muenchen Hbf -> Kaufering    (user cycles to Hbf)
-#   Return    C: Kaufering -> Muenchen Hbf    (user cycles home)
-#             D: Kaufering -> Solln           (direct)
-#
-# API: bahn.expert HAFAS v2 (free, no key). Station names are used as-is
-# below; if a name fails, swap in the EVA number in commute.yaml only.
-# Known EVA IDs (confirmed by scripts/test_db_api.py):
+# Known EVA IDs (verified via scripts/test_db_api.py):
 #   Solln          8005292
 #   Muenchen Hbf   8000261
 #   Kaufering      8003336
+#
+# Response shape (hafas-client v6):
+#   { "journeys": [ { "legs": [ {
+#       "departure": "ISO8601",           <- real-time
+#       "plannedDeparture": "ISO8601",    <- schedule
+#       "departureDelay": <seconds>,      <- NOTE: SECONDS, not minutes
+#       "arrival":  "ISO8601",
+#       "arrivalDelay": <seconds>,
+#       "cancelled": bool,
+#       "line": { "name": "RE 9", ... },
+#       "remarks": [ { "type": "...", "text": "..." } ]
+#       } ] } ] }
+#
+# Modes:
+#   Evening  — user sends `/office` to the Telegram bot -> flips commute_day on,
+#              fetches tomorrow's trains (both routes), asks Claude to suggest
+#              an alarm, replies to Telegram with the preview.
+#   Morning  — 05:00-07:00 (commute_day=on): polls Solln->Kaufering and
+#              Hbf->Kaufering every 5 min; disruption alerts via Telegram.
+#   Return   — 16:00-18:00 (commute_day=on): polls Kaufering->Hbf and
+#              Kaufering->Solln every 10 min.
+#   Reset    — 19:00 daily: auto-resets commute_day to off (opt-in each evening).
+#
+# HA version requirement: >= 2023.7 for `response_variable` on rest_command.
 # =============================================================================
 
 
@@ -43,6 +55,15 @@ input_datetime:
     has_date: false
     has_time: true
 
+input_number:
+  commute_delay_threshold_min:
+    name: Commute delay threshold (minutes)
+    min: 1
+    max: 60
+    step: 1
+    initial: 5
+    mode: box
+
 input_text:
   commute_last_check:
     name: Commute last check-in (iso timestamp)
@@ -51,150 +72,174 @@ input_text:
     name: Commute morning preview (last Claude output)
     max: 1000
   commute_last_alert_fingerprint:
-    # Hash of (route, delay, messages) so a recurring disruption is only
-    # pushed once, not every poll cycle.
+    # Hash of (route, date, hour-bucket) so a recurring disruption within the
+    # same hour is only pushed once, not every poll cycle.
     name: Commute last-alert fingerprint
     max: 255
+  commute_model_sonnet:
+    name: Commute model — extraction/classification
+    max: 64
+    initial: claude-sonnet-4-6
+  commute_model_opus:
+    name: Commute model — synthesis/judgement
+    max: 64
+    initial: claude-opus-4-7
 
 
 # -------- REST sensors -------------------------------------------------------
 # Long default poll (1h). Morning/evening automations force updates every
 # 5/10 min during active windows when commute_day is on.
 #
-# value_template exposes next_departure_hhmm (display-friendly).
-# Attributes expose the raw fields downstream templates / automations rely on.
-#
-# NOTE on JSON paths: bahn.expert /journeys returns
-#   { "journeys": [{ "segments": [{ "departure": {...}, "arrival": {...},
-#     "messages": [...], "cancelled": bool }], ...}] }
-# scripts/test_db_api.py confirms the exact shape for your stations before
-# enabling these sensors.
+# YAML anchors (&sensor_common / <<: *sensor_common) DRY up the four sensor
+# definitions so only (name, unique_id, route_label) differ per entry. The
+# value_template, json_attributes and json_attributes_path are identical.
 rest:
-  - resource_template: >-
-      https://bahn.expert/api/hafas/v2/journeys?from={{ 'Solln' | urlencode }}&to={{ 'Kaufering' | urlencode }}
+  - resource: https://v6.db.transport.rest/journeys?from=8005292&to=8003336&results=3
     scan_interval: 3600
     timeout: 20
     sensor:
-      - name: "DB Solln Kaufering"
+      - &sensor_common
+        name: "DB Solln Kaufering"
         unique_id: db_solln_kaufering
+        # Display next real-time departure as local HH:MM (handles Z / +01 / +02).
         value_template: >-
           {% set j = value_json.journeys[0] if value_json.journeys else None %}
-          {% if j %}{{ (j.segments[0].departure.time | default('')) [11:16] }}{% else %}unknown{% endif %}
+          {% if j and j.legs %}
+            {{ (j.legs[0].departure | as_datetime | as_local).strftime('%H:%M') }}
+          {% else %}unknown
+          {% endif %}
         json_attributes_path: "$.journeys[0]"
         json_attributes:
-          - segments
-          - cancelled
-          - messages
-          - duration
+          - legs
+          - refreshToken
 
-  - resource_template: >-
-      https://bahn.expert/api/hafas/v2/journeys?from={{ 'München Hbf' | urlencode }}&to={{ 'Kaufering' | urlencode }}
+  - resource: https://v6.db.transport.rest/journeys?from=8000261&to=8003336&results=3
     scan_interval: 3600
     timeout: 20
     sensor:
-      - name: "DB Hbf Kaufering"
+      - <<: *sensor_common
+        name: "DB Hbf Kaufering"
         unique_id: db_hbf_kaufering
-        value_template: >-
-          {% set j = value_json.journeys[0] if value_json.journeys else None %}
-          {% if j %}{{ (j.segments[0].departure.time | default('')) [11:16] }}{% else %}unknown{% endif %}
-        json_attributes_path: "$.journeys[0]"
-        json_attributes:
-          - segments
-          - cancelled
-          - messages
-          - duration
 
-  - resource_template: >-
-      https://bahn.expert/api/hafas/v2/journeys?from={{ 'Kaufering' | urlencode }}&to={{ 'München Hbf' | urlencode }}
+  - resource: https://v6.db.transport.rest/journeys?from=8003336&to=8000261&results=3
     scan_interval: 3600
     timeout: 20
     sensor:
-      - name: "DB Kaufering Return Hbf"
+      - <<: *sensor_common
+        name: "DB Kaufering Return Hbf"
         unique_id: db_kaufering_return_hbf
-        value_template: >-
-          {% set j = value_json.journeys[0] if value_json.journeys else None %}
-          {% if j %}{{ (j.segments[0].departure.time | default('')) [11:16] }}{% else %}unknown{% endif %}
-        json_attributes_path: "$.journeys[0]"
-        json_attributes:
-          - segments
-          - cancelled
-          - messages
-          - duration
 
-  - resource_template: >-
-      https://bahn.expert/api/hafas/v2/journeys?from={{ 'Kaufering' | urlencode }}&to={{ 'Solln' | urlencode }}
+  - resource: https://v6.db.transport.rest/journeys?from=8003336&to=8005292&results=3
     scan_interval: 3600
     timeout: 20
     sensor:
-      - name: "DB Kaufering Return Solln"
+      - <<: *sensor_common
+        name: "DB Kaufering Return Solln"
         unique_id: db_kaufering_return_solln
-        value_template: >-
-          {% set j = value_json.journeys[0] if value_json.journeys else None %}
-          {% if j %}{{ (j.segments[0].departure.time | default('')) [11:16] }}{% else %}unknown{% endif %}
-        json_attributes_path: "$.journeys[0]"
-        json_attributes:
-          - segments
-          - cancelled
-          - messages
-          - duration
 
 
 # -------- Template sensors (computed) ----------------------------------------
 # Normalised per-route status used by the disruption automation.
-# Keeps jinja out of the automation YAML and gives us clean state changes to
-# trigger on.
+# `delay_minutes` is explicitly cast to int and computed from seconds
+# (v6 API reports departureDelay in seconds).
+# `route_label` is a human-readable attribute so downstream code
+# doesn't have to reverse-engineer entity_ids.
 template:
   - sensor:
       - name: "Commute Solln Kaufering status"
         unique_id: commute_solln_kaufering_status
         state: >-
-          {% set a = state_attr('sensor.db_solln_kaufering', 'segments') %}
-          {% if a and a[0].cancelled %}cancelled
-          {% elif a and (a[0].departure.delay | default(0)) > 5 %}delayed
-          {% elif a %}ok
+          {% set threshold = states('input_number.commute_delay_threshold_min') | int(5) %}
+          {% set legs = state_attr('sensor.db_solln_kaufering', 'legs') %}
+          {% if legs and legs[0].cancelled %}cancelled
+          {% elif legs and ((legs[0].departureDelay | default(0) | int(0)) // 60) > threshold %}delayed
+          {% elif legs %}ok
           {% else %}unknown{% endif %}
         attributes:
-          delay_minutes: "{{ (state_attr('sensor.db_solln_kaufering','segments')[0].departure.delay | default(0)) if state_attr('sensor.db_solln_kaufering','segments') else 0 }}"
-          messages: "{{ state_attr('sensor.db_solln_kaufering','messages') or [] }}"
+          route_label: "Solln → Kaufering"
+          delay_minutes: >-
+            {% set legs = state_attr('sensor.db_solln_kaufering', 'legs') %}
+            {{ ((legs[0].departureDelay | default(0) | int(0)) // 60) if legs else 0 }}
+          messages: >-
+            {% set legs = state_attr('sensor.db_solln_kaufering', 'legs') %}
+            {{ (legs[0].remarks | map(attribute='text') | list) if legs and legs[0].remarks else [] }}
+
       - name: "Commute Hbf Kaufering status"
         unique_id: commute_hbf_kaufering_status
         state: >-
-          {% set a = state_attr('sensor.db_hbf_kaufering', 'segments') %}
-          {% if a and a[0].cancelled %}cancelled
-          {% elif a and (a[0].departure.delay | default(0)) > 5 %}delayed
-          {% elif a %}ok
+          {% set threshold = states('input_number.commute_delay_threshold_min') | int(5) %}
+          {% set legs = state_attr('sensor.db_hbf_kaufering', 'legs') %}
+          {% if legs and legs[0].cancelled %}cancelled
+          {% elif legs and ((legs[0].departureDelay | default(0) | int(0)) // 60) > threshold %}delayed
+          {% elif legs %}ok
           {% else %}unknown{% endif %}
         attributes:
-          delay_minutes: "{{ (state_attr('sensor.db_hbf_kaufering','segments')[0].departure.delay | default(0)) if state_attr('sensor.db_hbf_kaufering','segments') else 0 }}"
-          messages: "{{ state_attr('sensor.db_hbf_kaufering','messages') or [] }}"
+          route_label: "München Hbf → Kaufering"
+          delay_minutes: >-
+            {% set legs = state_attr('sensor.db_hbf_kaufering', 'legs') %}
+            {{ ((legs[0].departureDelay | default(0) | int(0)) // 60) if legs else 0 }}
+          messages: >-
+            {% set legs = state_attr('sensor.db_hbf_kaufering', 'legs') %}
+            {{ (legs[0].remarks | map(attribute='text') | list) if legs and legs[0].remarks else [] }}
+
       - name: "Commute Return Hbf status"
         unique_id: commute_return_hbf_status
         state: >-
-          {% set a = state_attr('sensor.db_kaufering_return_hbf', 'segments') %}
-          {% if a and a[0].cancelled %}cancelled
-          {% elif a and (a[0].departure.delay | default(0)) > 5 %}delayed
-          {% elif a %}ok
+          {% set threshold = states('input_number.commute_delay_threshold_min') | int(5) %}
+          {% set legs = state_attr('sensor.db_kaufering_return_hbf', 'legs') %}
+          {% if legs and legs[0].cancelled %}cancelled
+          {% elif legs and ((legs[0].departureDelay | default(0) | int(0)) // 60) > threshold %}delayed
+          {% elif legs %}ok
           {% else %}unknown{% endif %}
         attributes:
-          delay_minutes: "{{ (state_attr('sensor.db_kaufering_return_hbf','segments')[0].departure.delay | default(0)) if state_attr('sensor.db_kaufering_return_hbf','segments') else 0 }}"
-          messages: "{{ state_attr('sensor.db_kaufering_return_hbf','messages') or [] }}"
+          route_label: "Kaufering → München Hbf"
+          delay_minutes: >-
+            {% set legs = state_attr('sensor.db_kaufering_return_hbf', 'legs') %}
+            {{ ((legs[0].departureDelay | default(0) | int(0)) // 60) if legs else 0 }}
+          messages: >-
+            {% set legs = state_attr('sensor.db_kaufering_return_hbf', 'legs') %}
+            {{ (legs[0].remarks | map(attribute='text') | list) if legs and legs[0].remarks else [] }}
+
       - name: "Commute Return Solln status"
         unique_id: commute_return_solln_status
         state: >-
-          {% set a = state_attr('sensor.db_kaufering_return_solln', 'segments') %}
-          {% if a and a[0].cancelled %}cancelled
-          {% elif a and (a[0].departure.delay | default(0)) > 5 %}delayed
-          {% elif a %}ok
+          {% set threshold = states('input_number.commute_delay_threshold_min') | int(5) %}
+          {% set legs = state_attr('sensor.db_kaufering_return_solln', 'legs') %}
+          {% if legs and legs[0].cancelled %}cancelled
+          {% elif legs and ((legs[0].departureDelay | default(0) | int(0)) // 60) > threshold %}delayed
+          {% elif legs %}ok
           {% else %}unknown{% endif %}
         attributes:
-          delay_minutes: "{{ (state_attr('sensor.db_kaufering_return_solln','segments')[0].departure.delay | default(0)) if state_attr('sensor.db_kaufering_return_solln','segments') else 0 }}"
-          messages: "{{ state_attr('sensor.db_kaufering_return_solln','messages') or [] }}"
+          route_label: "Kaufering → Solln"
+          delay_minutes: >-
+            {% set legs = state_attr('sensor.db_kaufering_return_solln', 'legs') %}
+            {{ ((legs[0].departureDelay | default(0) | int(0)) // 60) if legs else 0 }}
+          messages: >-
+            {% set legs = state_attr('sensor.db_kaufering_return_solln', 'legs') %}
+            {{ (legs[0].remarks | map(attribute='text') | list) if legs and legs[0].remarks else [] }}
+
+  # Fires when any DB sensor is unavailable — lets us notice API outages
+  # instead of silently showing stale state.
+  - binary_sensor:
+      - name: "Commute API stale"
+        unique_id: commute_api_stale
+        device_class: problem
+        state: >-
+          {% set ids = [
+            'sensor.db_solln_kaufering',
+            'sensor.db_hbf_kaufering',
+            'sensor.db_kaufering_return_hbf',
+            'sensor.db_kaufering_return_solln'
+          ] %}
+          {{ ids | select('is_state', 'unavailable') | list | count > 0
+             or ids | select('is_state', 'unknown')    | list | count == (ids | count) }}
 
 
 # -------- REST commands ------------------------------------------------------
-# Claude API is defined here (not in the commute-specific section) because
-# agents 2 and 5 will reuse it. Kept in this package for now; move to a
-# dedicated claude.yaml package once Agent 2 lands.
+# Claude API defined here (not in a separate package) because agents 2 and 5
+# will reuse it. Move to a dedicated claude.yaml package once Agent 2 lands.
+# Model IDs are read from input_text helpers so they can be rotated without a
+# config edit + restart (see commute_model_sonnet / commute_model_opus above).
 rest_command:
   claude_api:
     url: "https://api.anthropic.com/v1/messages"
@@ -205,7 +250,7 @@ rest_command:
       content-type: "application/json"
     payload: >-
       {
-        "model": "{{ model | default('claude-sonnet-4-20250514') }}",
+        "model": {{ model | to_json }},
         "max_tokens": {{ max_tokens | default(1024) }},
         "system": {{ system | default('You are a helpful assistant.') | to_json }},
         "messages": [{"role": "user", "content": {{ prompt | to_json }}}]
@@ -275,9 +320,10 @@ automation:
     mode: single
 
   # ----- Disruption alert ---------------------------------------------------
-  # Fires whenever any route goes delayed/cancelled OR picks up a new message.
-  # Deduped via commute_last_alert_fingerprint so a single delay isn't resent
-  # on every poll cycle.
+  # Fires whenever any route goes delayed/cancelled. Deduped via
+  # commute_last_alert_fingerprint keyed on (route, date, hour-bucket) so a
+  # single disruption within the same hour is only pushed once, even if the
+  # sensor flaps ok→delayed→ok→delayed.
   - id: commute_disruption_alert
     alias: Commute - disruption alert
     trigger:
@@ -296,7 +342,8 @@ automation:
         state: "on"
       - condition: template
         value_template: >-
-          {% set fp = trigger.entity_id ~ ':' ~ trigger.to_state.state ~ ':' ~ (trigger.to_state.attributes.delay_minutes | default(0)) %}
+          {% set bucket = now().strftime('%Y-%m-%d-%H') %}
+          {% set fp = trigger.entity_id ~ ':' ~ trigger.to_state.state ~ ':' ~ bucket %}
           {{ fp != states('input_text.commute_last_alert_fingerprint') }}
     action:
       - service: input_text.set_value
@@ -304,27 +351,53 @@ automation:
           entity_id: input_text.commute_last_alert_fingerprint
         data:
           value: >-
-            {{ trigger.entity_id }}:{{ trigger.to_state.state }}:{{ trigger.to_state.attributes.delay_minutes | default(0) }}
+            {% set bucket = now().strftime('%Y-%m-%d-%H') %}
+            {{ trigger.entity_id }}:{{ trigger.to_state.state }}:{{ bucket }}
       - service: telegram_bot.send_message
         data:
           message: >-
             🚆 *Commute disruption*
 
-            Route: `{{ trigger.entity_id | replace('sensor.commute_','') | replace('_status','') | replace('_',' ') }}`
+            Route: `{{ trigger.to_state.attributes.route_label | default(trigger.entity_id) }}`
             Status: *{{ trigger.to_state.state }}*
-            Delay: {{ trigger.to_state.attributes.delay_minutes | default(0) }} min
+            Delay: {{ trigger.to_state.attributes.delay_minutes | default(0) | int(0) }} min
             {% if trigger.to_state.attributes.messages %}
-            Notes: {{ trigger.to_state.attributes.messages | map(attribute='text') | list | join('; ') }}
+            Notes: {{ trigger.to_state.attributes.messages | join('; ') }}
             {% endif %}
           parse_mode: markdown
     mode: queued
     max: 10
 
+  # ----- API stale alert ----------------------------------------------------
+  # Pings Telegram if the DB REST sensors start returning unavailable.
+  # Fires once on the unavailable→available transition (not per poll).
+  - id: commute_api_stale_alert
+    alias: Commute - API stale alert
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.commute_api_stale
+        to: "on"
+        for: "00:15:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.commute_day
+        state: "on"
+    action:
+      - service: telegram_bot.send_message
+        data:
+          message: >-
+            ⚠️ *Commute API stale*
+
+            DB REST sensors have been unavailable for 15+ min. Disruption
+            alerts may be missing. Check HA logs or v6.db.transport.rest status.
+          parse_mode: markdown
+    mode: single
+
   # ----- Telegram /office check-in ------------------------------------------
-  # Triggered by the telegram_bot integration firing `telegram_command` when
-  # the user DMs `/office` to the bot. Flips commute_day on, refreshes sensors,
-  # asks Claude (Opus) to synthesise an alarm suggestion + both-route preview,
-  # replies to Telegram.
+  # Flips commute_day on, refreshes sensors, asks Claude (Opus) to synthesise
+  # an alarm suggestion + both-route preview, replies to Telegram.
+  # Claude call is wrapped in a retry-until-success loop (3 attempts, 10s back-off)
+  # so a single 429/5xx doesn't leave the user without a preview.
   - id: commute_telegram_checkin
     alias: Commute - Telegram /office check-in
     trigger:
@@ -332,6 +405,8 @@ automation:
         event_type: telegram_command
         event_data:
           command: /office
+    variables:
+      alarm_fallback: "06:15"
     action:
       - service: input_boolean.turn_on
         target:
@@ -344,50 +419,84 @@ automation:
       - service: script.commute_refresh_all
       # Give the REST sensors ~5s to refresh before we read them.
       - delay: "00:00:05"
-      - service: rest_command.claude_api
-        data:
-          model: claude-opus-4-20250514
-          max_tokens: 600
-          system: >-
-            You help plan a morning commute from Munich to Kaufering.
-            Output plain text (no markdown headers). Keep it under 15 lines.
-            Suggest an alarm time in HH:MM that gets the user to the earliest
-            viable departure on either route with a 45-min wake-to-door buffer
-            (Solln direct) or 60-min (cycle to Hbf, +15min cycle).
-            Prefer the route with fewer delays. End with a single line
-            "ALARM=HH:MM" so it can be parsed.
-          prompt: >-
-            Tomorrow's departures:
 
-            Route A  Solln -> Kaufering:
-              Next: {{ states('sensor.db_solln_kaufering') }}
-              Status: {{ states('sensor.commute_solln_kaufering_status') }}
-              Delay: {{ state_attr('sensor.commute_solln_kaufering_status','delay_minutes') }} min
-              Messages: {{ state_attr('sensor.commute_solln_kaufering_status','messages') }}
+      # Retry the Claude call up to 3 times with 10s back-off.
+      - repeat:
+          sequence:
+            - service: rest_command.claude_api
+              data:
+                model: "{{ states('input_text.commute_model_opus') }}"
+                max_tokens: 600
+                system: >-
+                  You help plan a morning commute from Munich to Kaufering.
+                  Output plain text (no markdown headers). Keep it under 15 lines.
+                  Suggest an alarm time in HH:MM that gets the user to the
+                  earliest viable departure on either route with a 45-min
+                  wake-to-door buffer (Solln direct) or 60-min (cycle to Hbf,
+                  +15min cycle). The alarm MUST be at least 15 minutes from now
+                  — if no viable option exists, say so and omit the alarm.
+                  Prefer the route with fewer delays. End with a single line
+                  "ALARM=HH:MM" so it can be parsed (omit the line if no viable
+                  alarm).
+                prompt: >-
+                  Current time: {{ now().strftime('%Y-%m-%d %H:%M') }}
+                  Tomorrow's departures:
 
-            Route B  Munich Hbf -> Kaufering (user cycles to Hbf, +15min):
-              Next: {{ states('sensor.db_hbf_kaufering') }}
-              Status: {{ states('sensor.commute_hbf_kaufering_status') }}
-              Delay: {{ state_attr('sensor.commute_hbf_kaufering_status','delay_minutes') }} min
-              Messages: {{ state_attr('sensor.commute_hbf_kaufering_status','messages') }}
+                  Route A  Solln -> Kaufering:
+                    Next: {{ states('sensor.db_solln_kaufering') }}
+                    Status: {{ states('sensor.commute_solln_kaufering_status') }}
+                    Delay: {{ state_attr('sensor.commute_solln_kaufering_status','delay_minutes') | default(0) | int(0) }} min
+                    Messages: {{ state_attr('sensor.commute_solln_kaufering_status','messages') | default([]) }}
 
-            Suggest the best route, the alarm time, and a one-line rationale.
-        response_variable: claude_resp
+                  Route B  Munich Hbf -> Kaufering (user cycles to Hbf, +15min):
+                    Next: {{ states('sensor.db_hbf_kaufering') }}
+                    Status: {{ states('sensor.commute_hbf_kaufering_status') }}
+                    Delay: {{ state_attr('sensor.commute_hbf_kaufering_status','delay_minutes') | default(0) | int(0) }} min
+                    Messages: {{ state_attr('sensor.commute_hbf_kaufering_status','messages') | default([]) }}
+
+                  Suggest the best route, the alarm time, and a one-line rationale.
+              response_variable: claude_resp
+              continue_on_error: true
+            - if:
+                - condition: template
+                  value_template: "{{ claude_resp is defined and claude_resp.content is defined }}"
+              then:
+                - stop: "got response"
+            - delay: "00:00:10"
+          until:
+            - condition: template
+              value_template: "{{ repeat.index >= 3 }}"
+
+      # Store the summary (truncate to input_text max of 1000).
       - service: input_text.set_value
         target:
           entity_id: input_text.commute_morning_summary
         data:
           value: >-
-            {{ (claude_resp.content[0].text if claude_resp is defined and claude_resp.content else 'No preview available')[:255] }}
-      # Parse ALARM=HH:MM out of the Claude response; fall back to 06:15 if missing.
+            {{ (claude_resp.content[0].text
+                if claude_resp is defined
+                and claude_resp.content is defined
+                and claude_resp.content
+                else 'No preview available — Claude API failed after 3 retries.')[:1000] }}
+
+      # Parse ALARM=HH:MM out of the Claude response; fall back to alarm_fallback.
+      # Record a flag so the user knows whether the alarm is Claude's or the fallback.
+      - variables:
+          claude_text: >-
+            {{ claude_resp.content[0].text
+               if claude_resp is defined
+               and claude_resp.content is defined
+               and claude_resp.content
+               else '' }}
+          alarm_match: "{{ claude_text | regex_findall('ALARM=(\\d{2}:\\d{2})') }}"
+          alarm_hhmm: "{{ alarm_match[0] if alarm_match else alarm_fallback }}"
+          alarm_is_fallback: "{{ not alarm_match }}"
       - service: input_datetime.set_datetime
         target:
           entity_id: input_datetime.alarm_time
         data:
-          time: >-
-            {% set txt = (claude_resp.content[0].text if claude_resp is defined and claude_resp.content else '') %}
-            {% set m = txt | regex_findall('ALARM=(\d{2}:\d{2})') %}
-            {{ (m[0] if m else '06:15') ~ ':00' }}
+          time: "{{ alarm_hhmm }}:00"
+
       - service: telegram_bot.send_message
         data:
           target: "{{ trigger.event.data.chat_id }}"
@@ -396,7 +505,9 @@ automation:
 
             {{ states('input_text.commute_morning_summary') }}
 
-            Suggested alarm: *{{ states('input_datetime.alarm_time')[:5] }}*
+            Suggested alarm: *{{ '%02d:%02d' | format(
+                state_attr('input_datetime.alarm_time','hour') | int(0),
+                state_attr('input_datetime.alarm_time','minute') | int(0)) }}*{% if alarm_is_fallback %} _(fallback — Claude didn't return an ALARM line)_{% endif %}
 
             Solln  → Kaufering: {{ states('sensor.db_solln_kaufering') }} ({{ states('sensor.commute_solln_kaufering_status') }})
             Hbf    → Kaufering: {{ states('sensor.db_hbf_kaufering') }} ({{ states('sensor.commute_hbf_kaufering_status') }})

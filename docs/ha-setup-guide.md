@@ -2,9 +2,14 @@
 
 Step-by-step deployment of Agent 1 on the Raspberry Pi running HA OS.
 
+> `100.x.y.z` below is a placeholder — substitute your own Pi's Tailscale IP.
+> `secrets.yaml` must live on the Pi (`/config/secrets.yaml`) and is
+> explicitly ignored in this repo's `.gitignore` — never sync it from the Pi
+> to the repo.
+
 ## Prerequisites
 
-- Home Assistant OS running, accessible via Tailscale at `100.71.189.93:8123`
+- Home Assistant OS running, accessible via Tailscale at `100.x.y.z:8123`
 - Telegram bot already configured in HA (integration + `telegram_bot:` in config)
 - Anthropic API key
 - **iPhone deploy:** Tailscale app installed + connected, Safari or Chrome
@@ -19,43 +24,44 @@ Everything below runs from your iPhone over Tailscale. No laptop needed.
 
 | Tool | How to access |
 |---|---|
-| HA web UI | Safari → `http://100.71.189.93:8123` |
-| VS Code add-on | Safari → HA sidebar → Studio Code Server (or `http://100.71.189.93:8123/api/hassio/ingress/<addon-slug>`) |
-| SSH | Termius app (or any iOS SSH client) → `root@100.71.189.93` port 22 |
+| HA web UI | Safari → `http://100.x.y.z:8123` |
+| VS Code add-on | Safari → HA sidebar → Studio Code Server (or `http://100.x.y.z:8123/api/hassio/ingress/<addon-slug>`) |
+| SSH | Termius app (or any iOS SSH client) → `root@100.x.y.z` port 22 |
 | Telegram | Telegram app (for testing `/office`) |
 
 ### Step 1 — Connect Tailscale
 
 Open the **Tailscale** app on your iPhone. Make sure the VPN toggle is on and
-you can see `100.71.189.93` in your device list. Test by opening
-`http://100.71.189.93:8123` in Safari — you should see the HA login screen.
+you can see `100.x.y.z` in your device list. Test by opening
+`http://100.x.y.z:8123` in Safari — you should see the HA login screen.
 
-### Step 2 — Test the bahn.expert API from the Pi
+### Step 2 — Test the DB API from the Pi
 
 Open your SSH app (Termius, Blink, etc.) and connect:
 
 ```
-Host: 100.71.189.93
+Host: 100.x.y.z
 User: root
 Port: 22
 Auth: password (your Terminal & SSH add-on password)
 ```
 
-Once connected, verify the API works from the Pi:
+Once connected, verify the v6 DB REST API works from the Pi:
 
 ```bash
-curl -s "https://bahn.expert/api/hafas/v2/journeys?from=Solln&to=Kaufering" | head -c 500
+curl -s "https://v6.db.transport.rest/journeys?from=8005292&to=8003336&results=3" | head -c 500
 ```
 
-You should see JSON with a `"journeys"` array. If you get an error or empty
-response, try with EVA IDs:
+You should see JSON with a `"journeys"` array where each journey has a
+`"legs"` list. Confirm your EVA IDs match the stations you expect:
 
 ```bash
-curl -s "https://bahn.expert/api/hafas/v2/journeys?from=8005292&to=8003336" | head -c 500
+curl -s "https://v6.db.transport.rest/locations?query=8005292&results=1"
+# → should return Solln
 ```
 
-If EVA IDs work but names don't, you'll need to swap the station names in
-`commute.yaml` (Step 5 below).
+`commute.yaml` uses EVA IDs directly in the sensor URLs (no station names),
+so you don't need to edit the package unless you're changing routes.
 
 ### Step 3 — Add your Anthropic API key to secrets
 
@@ -119,15 +125,13 @@ Verify:
 head -20 /config/packages/commute.yaml
 ```
 
-> **If station names needed EVA IDs** (from Step 2): open commute.yaml in
-> VS Code and find-replace:
-> - `'Solln'` → `'8005292'`
-> - `'München Hbf'` → `'8000261'`
-> - `'Kaufering'` → `'8003336'`
+> `commute.yaml` already pins EVA IDs (Solln=8005292, München Hbf=8000261,
+> Kaufering=8003336) directly in the sensor URLs. To swap in different
+> stations, change the EVA IDs at the top of the `rest:` section.
 
 ### Step 6 — Validate and restart HA
 
-In Safari, go to the HA web UI (`http://100.71.189.93:8123`):
+In Safari, go to the HA web UI (`http://100.x.y.z:8123`):
 
 1. **Developer Tools** (bottom menu) → **YAML** tab → **Check Configuration**
    - Must show: "Configuration valid!"
@@ -211,7 +215,7 @@ At 19:00 each day, `commute_day` auto-resets to off. You can verify in
 |---|---|
 | Connect to Pi | Tailscale app → toggle on |
 | Edit YAML | Safari → VS Code add-on (landscape + desktop mode) |
-| SSH commands | Termius app → `root@100.71.189.93` |
+| SSH commands | Termius app → `root@100.x.y.z` |
 | Check config | HA → Developer Tools → YAML → Check Configuration |
 | Restart HA | HA → Developer Tools → YAML → Restart |
 | Check states | HA → Developer Tools → States → filter `commute` |
@@ -223,7 +227,7 @@ At 19:00 each day, `commute_day` auto-resets to off. You can verify in
 
 ## Laptop deploy (alternative)
 
-### 1. Verify the bahn.expert API
+### 1. Verify the DB API
 
 ```bash
 cd scripts
@@ -231,8 +235,12 @@ pip install -r requirements.txt
 python test_db_api.py
 ```
 
-If any station names fail, the script prints EVA IDs to paste into
-`commute.yaml` before deploying.
+The script resolves every pinned EVA ID against `/locations` and then exercises
+`/journeys` for all four routes. Run the unit tests at the same time:
+
+```bash
+python -m pytest tests/
+```
 
 ### 2. Add secrets
 
@@ -256,8 +264,8 @@ homeassistant:
 Copy `ha-config/packages/commute.yaml` to `/config/packages/commute.yaml`.
 
 Options:
-- **Samba add-on**: browse to `\\100.71.189.93\config\packages\`
-- **SCP via Tailscale**: `scp ha-config/packages/commute.yaml root@100.71.189.93:/config/packages/`
+- **Samba add-on**: browse to `\\100.x.y.z\config\packages\`
+- **SCP via Tailscale**: `scp ha-config/packages/commute.yaml root@100.x.y.z:/config/packages/`
 - **VS Code add-on**: paste file contents directly
 - **File Editor add-on**: create file in the HA UI
 
@@ -311,9 +319,10 @@ Via SSH: `rm /config/packages/commute.yaml && ha core restart`
 
 | Symptom | Fix |
 |---|---|
-| Can't reach Pi from iPhone | Check Tailscale app is connected; try pinging `100.71.189.93` from Termius |
+| Can't reach Pi from iPhone | Check Tailscale app is connected; try pinging `100.x.y.z` from Termius |
 | VS Code add-on won't load | Try Safari desktop mode (Aa → Request Desktop Website); clear cache; or fall back to SSH |
-| Sensors stuck on `unknown` | Check HA logs (`ha core logs \| grep rest`); verify `curl "https://bahn.expert/api/hafas/v2/journeys?from=Solln&to=Kaufering"` works from Pi SSH |
+| Sensors stuck on `unknown` | Check HA logs (`ha core logs \| grep rest`); verify `curl "https://v6.db.transport.rest/journeys?from=8005292&to=8003336"` works from Pi SSH |
+| `binary_sensor.commute_api_stale` = on | v6.db.transport.rest is down or unreachable; check https://v6.db.transport.rest/ directly |
 | `/office` doesn't trigger | Confirm `telegram_bot:` platform is in your HA config and the bot user matches |
 | Claude API call fails | Check `secrets.yaml` key; SSH: `ha core logs \| grep rest_command` |
 | Template sensors show `unknown` | REST sensors haven't updated yet — call `script.commute_refresh_all` first |

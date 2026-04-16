@@ -19,7 +19,9 @@ Claude artifacts render the dashboard and chat surface.
 ```
 ha-config/packages/     # Per-agent HA packages (drop-in to /config/packages/)
 scripts/                # Local dev & API probes (run from laptop or Pi SSH add-on)
+scripts/tests/          # Unit tests (pytest)
 docs/                   # Architecture, agent specs, deploy runbooks
+CLAUDE.md               # Conventions for Claude Code when editing this repo
 ```
 
 Start here: [`docs/architecture.md`](docs/architecture.md) then
@@ -29,8 +31,10 @@ Start here: [`docs/architecture.md`](docs/architecture.md) then
 ## Running the commute agent
 
 1. `cp .env.example .env` and fill in keys.
-2. `cd scripts && pip install -r requirements.txt && python test_db_api.py` —
-   verifies the bahn.expert API + confirms station IDs.
-3. Follow [`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to drop
+2. `cd scripts && pip install -r requirements.txt`
+3. `python test_db_api.py` — exercises v6.db.transport.rest for all four
+   routes and resolves the pinned EVA IDs.
+4. `python -m pytest tests/` — unit-tests the parser against fixture data.
+5. Follow [`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to drop
    `ha-config/packages/commute.yaml` onto the Pi.
-4. Send `/office` to the Telegram bot the evening before a commute day.
+6. Send `/office` to the Telegram bot the evening before a commute day.
