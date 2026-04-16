@@ -1,0 +1,36 @@
+# Personal Agent
+
+Personal AI assistant running on Home Assistant OS (Raspberry Pi) + Claude artifacts.
+Home Assistant is the agent runtime (scheduler, state store, notification bus);
+Claude artifacts render the dashboard and chat surface.
+
+## Status
+
+| Agent | Status |
+|---|---|
+| 1. Daily Commute | In progress (this branch) |
+| 2. Morning Brief | Planned |
+| 3. Home Control | Planned |
+| 4. Email Triage | Planned |
+| 5. Industry Radar | Planned |
+
+## Layout
+
+```
+ha-config/packages/     # Per-agent HA packages (drop-in to /config/packages/)
+scripts/                # Local dev & API probes (run from laptop or Pi SSH add-on)
+docs/                   # Architecture, agent specs, deploy runbooks
+```
+
+Start here: [`docs/architecture.md`](docs/architecture.md) then
+[`docs/agent-specs.md`](docs/agent-specs.md) then
+[`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to deploy.
+
+## Running the commute agent
+
+1. `cp .env.example .env` and fill in keys.
+2. `cd scripts && pip install -r requirements.txt && python test_db_api.py` —
+   verifies the bahn.expert API + confirms station IDs.
+3. Follow [`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to drop
+   `ha-config/packages/commute.yaml` onto the Pi.
+4. Send `/office` to the Telegram bot the evening before a commute day.
