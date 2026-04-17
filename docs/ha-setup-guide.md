@@ -171,24 +171,19 @@ Confirm you see all of these (they may show `unknown` until first poll):
 
 Open **Telegram** on your iPhone and try these against your HA bot:
 
-| Command | When to use | Expected reply |
-|---|---|---|
-| `/office` | Any time; hour-aware | 🚆 Morning / 🏠 Return / 🚆 Tomorrow header + Claude recommendation |
-| `/office now` | Force morning outbound | 🚆 Morning + next train recommendation |
-| `/office tomorrow` | Force tomorrow lookup | 🚆 Tomorrow {day} + route + `ALARM=HH:MM` |
-| `/home` | Any time, returning from Kaufering | 🏠 Return + next inbound recommendation |
+| Command | Expected reply |
+|---|---|
+| `/office` | 🚆 To office — 3 Solln → Kaufering departures + 3 Hbf → Kaufering departures, one per line |
+| `/office tomorrow` | 🚆 Tomorrow {day} — same overview + `Earliest Solln HH:MM → alarm HH:MM` line |
+| `/home` | 🏠 To home — 3 Kaufering → Solln + 3 Kaufering → Hbf departures |
 
-Tomorrow mode only flips `commute_day` on when Claude returns a viable
-`ALARM=` line. If no route is viable (e.g. both cancelled overnight), the
-reply says so and `commute_day` stays off — toggle it manually in HA if you
-still plan to commute.
+`/office tomorrow` flips `commute_day` on only if at least one non-cancelled
+Solln departure was returned. Otherwise `commute_day` stays off and the
+reply says so — toggle it manually in HA if you still plan to commute.
 
-If the Claude API part fails (generic "Claude unavailable" text), check:
-- `secrets.yaml` has the correct `anthropic_api_key`
+If replies are empty / "(no data)", check:
+- SSH: `curl "https://v6.db.transport.rest/journeys?from=8005292&to=8003336&results=3"` from the Pi
 - SSH: `ha core logs | grep rest_command` for errors
-
-The basic commute tracking (sensors + disruption alerts) works even without
-Claude API — only the recommendation text needs it.
 
 ### Step 10 — Verify disruption alerts
 

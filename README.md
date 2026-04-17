@@ -38,7 +38,7 @@ Start here: [`docs/architecture.md`](docs/architecture.md) then
 5. Follow [`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to drop
    `ha-config/packages/commute.yaml` onto the Pi.
 6. Telegram commands:
-   - `/office` — time-aware (morning recommendation, afternoon return, or
-     tomorrow's alarm depending on the hour)
-   - `/office now` / `/office tomorrow` — force the mode
-   - `/home` — next return connection from Kaufering, any time
+   - `/office` — next 3 Munich → Kaufering departures on both routes (Solln
+     direct, via Hbf + cycle)
+   - `/office tomorrow` — same for tomorrow from 06:00 + derived alarm
+   - `/home` — next 3 Kaufering → Munich departures on both directions

@@ -17,25 +17,24 @@ Context-aware train connections for a daily Solln ↔ Kaufering commute.
 
 ### Telegram commands
 
-`/office` is time-aware. The mode is picked from the local hour unless an
-explicit arg overrides:
+Direction-based. `/office` always outbound, `/home` always inbound — no
+time-aware dispatch, the user chooses the command.
 
 | Command | Behaviour |
 |---|---|
-| `/office` (hour < 14) | `live_morning` — polled outbound sensors, Claude recommends next train |
-| `/office` (14 ≤ hour < 19) | `live_return` — polled inbound sensors, Claude recommends |
-| `/office` (hour ≥ 19) | `tomorrow` — explicit 06:00 lookup, Claude suggests alarm |
-| `/office now` | force `live_morning` |
-| `/office tomorrow` | force `tomorrow` |
-| `/home` | always `live_return` |
+| `/office` | Live overview of the next 3 Munich → Kaufering departures on both routes (Solln direct, via Hbf + cycle) |
+| `/office tomorrow` | Same overview for tomorrow from 06:00 + derived alarm (earliest non-cancelled Solln − 45 min) |
+| `/home` | Live overview of the next 3 Kaufering → Munich departures on both directions |
 
-Replies contain **only** Claude's recommendation — no raw sensor dump.
+Replies are a plain-text overview, one departure per line, with delays and
+cancellations marked. Claude is **not** called from any command path —
+the user picks their own route.
 
 ### State machine
 
-- `commute_day` is flipped **on** only in tomorrow mode and only when Claude
-  returns a viable `ALARM=HH:MM` line. No fallback alarm — if no route is
-  viable, `commute_day` stays off and the user is told to toggle it manually.
+- `commute_day` is flipped **on** only by `/office tomorrow` and only when
+  an earliest non-cancelled Solln departure exists. No fallback alarm —
+  if no departure is viable, `commute_day` stays off and the message says so.
 - `commute_day=on` enables the background automations:
   - **Morning poll** (05:00–07:00, every 5 min): refresh outbound sensors.
   - **Return poll** (16:00–18:00, every 10 min): refresh inbound sensors.

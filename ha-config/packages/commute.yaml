@@ -29,17 +29,17 @@
 #       "remarks": [ { "type": "...", "text": "..." } ]
 #       } ] } ] }
 #
-# Telegram commands (time-aware dispatch based on local hour):
-#   /office              — no arg: <14h → live_morning, <19h → live_return,
-#                          >=19h → tomorrow
-#   /office now          — force live_morning (next outbound from polled sensors)
-#   /office tomorrow     — force tomorrow (explicit 06:00 lookup via
-#                          rest_command.db_journeys_lookup)
-#   /home                — always live_return (Kaufering → Munich now)
+# Telegram commands (direction-based — no time-aware dispatch):
+#   /office              — live overview of the next 3 Munich -> Kaufering
+#                          departures on both routes (Solln direct, Hbf +cycle)
+#   /office tomorrow     — same overview for tomorrow from 06:00 + derived
+#                          alarm (earliest non-cancelled Solln - 45 min).
+#                          Flips commute_day ON only when an alarm is derivable.
+#   /home                — live overview of the next 3 Kaufering -> Munich
+#                          departures on both directions (Solln direct, Hbf)
 #
-# Tomorrow mode flips commute_day ON only when Claude returns a viable
-# ALARM=HH:MM line; otherwise commute_day stays off and the user is told
-# to toggle it manually.
+# No Claude synthesis in any command path — the user picks a route. We just
+# render the data. claude_api is still defined for future agents.
 #
 # Background automations (only fire when commute_day=on):
 #   Morning poll — 05:00-07:00, refresh outbound sensors every 5 min
@@ -421,18 +421,18 @@ automation:
           parse_mode: markdown
     mode: single
 
-  # ----- Telegram /office (time-aware) --------------------------------------
-  # Mode dispatch based on (optional) arg and local hour:
-  #   /office now                   -> live_morning (use polled sensors)
-  #   /office tomorrow              -> tomorrow     (explicit 06:00 lookup)
-  #   /office (bare) + hour < 14    -> live_morning
-  #   /office (bare) + hour < 19    -> live_return  (use polled sensors)
-  #   /office (bare) + hour >= 19   -> tomorrow
+  # ----- Telegram /office (outbound to Kaufering) ---------------------------
+  # Always outbound (Munich -> Kaufering). No time-aware dispatch — use /home
+  # for the return direction.
+  #   /office           -> live overview of the next 3 departures on both
+  #                        routes (Solln direct, via Hbf +15 min cycle)
+  #   /office tomorrow  -> same overview for tomorrow from 06:00, plus a
+  #                        suggested alarm (earliest non-cancelled Solln - 45 min
+  #                        wake-to-door). Only flips commute_day ON when an
+  #                        alarm is derivable; otherwise commute_day stays off.
   #
-  # Reply is just Claude's recommendation — no raw sensor dump.
-  # commute_day is flipped ON only in the tomorrow branch, and only when
-  # Claude returns a viable ALARM= line. If no viable alarm, we leave
-  # commute_day OFF and tell the user to toggle it manually.
+  # No Claude synthesis — the user picks a route themselves. We just render
+  # the data.
   - id: commute_telegram_checkin
     alias: Commute - Telegram /office
     trigger:
@@ -442,13 +442,6 @@ automation:
           command: /office
     variables:
       arg: "{{ (trigger.event.data.args | default([]) | list)[0] | default('') | lower }}"
-      hour: "{{ now().hour }}"
-      mode: >-
-        {{ 'live_morning' if arg == 'now'
-           else 'tomorrow'     if arg == 'tomorrow'
-           else 'live_morning' if (hour | int(0)) < 14
-           else 'live_return'  if (hour | int(0)) < 19
-           else 'tomorrow' }}
     action:
       - service: input_text.set_value
         target:
@@ -457,120 +450,31 @@ automation:
           value: "{{ now().isoformat() }}"
 
       - choose:
-          # -------- live_morning: outbound now ---------------------------------
+          # -------- /office tomorrow -------------------------------------------
           - conditions:
               - condition: template
-                value_template: "{{ (mode | trim) == 'live_morning' }}"
-            sequence:
-              - service: script.commute_refresh_all
-              - delay: "00:00:05"
-              - service: rest_command.claude_api
-                data:
-                  model: "{{ states('input_text.commute_model_opus') }}"
-                  max_tokens: 300
-                  system: >-
-                    You help the user catch the next Munich -> Kaufering train
-                    RIGHT NOW. Plain text, max 5 lines, no markdown. Recommend
-                    ONE route (Solln direct, or cycle to Hbf +15 min) with the
-                    next viable departure time and a one-line reason.
-                  prompt: >-
-                    Current time: {{ now().strftime('%H:%M') }}
-                    Route A Solln -> Kaufering (direct):
-                      Next: {{ states('sensor.db_solln_kaufering') }}
-                      Status: {{ states('sensor.commute_solln_kaufering_status') }}
-                      Delay: {{ state_attr('sensor.commute_solln_kaufering_status','delay_minutes') | default(0) | int(0) }} min
-                      Warnings: {{ state_attr('sensor.commute_solln_kaufering_status','messages') | default([]) }}
-                    Route B Munich Hbf -> Kaufering (+15 min cycle to Hbf):
-                      Next: {{ states('sensor.db_hbf_kaufering') }}
-                      Status: {{ states('sensor.commute_hbf_kaufering_status') }}
-                      Delay: {{ state_attr('sensor.commute_hbf_kaufering_status','delay_minutes') | default(0) | int(0) }} min
-                      Warnings: {{ state_attr('sensor.commute_hbf_kaufering_status','messages') | default([]) }}
-                response_variable: claude_resp
-                continue_on_error: true
-              - service: telegram_bot.send_message
-                target:
-                  entity_id: notify.pa_bot_wolfgang_l
-                data:
-                  # No parse_mode — Claude's text could contain any characters
-                  # and a stray '*' or '_' would fail Telegram markdown parsing.
-                  message: >-
-                    🚆 Morning
-
-                    {{ claude_resp.content.content[0].text
-                       if claude_resp is defined
-                         and claude_resp.content is defined
-                         and claude_resp.content.content is defined
-                         and claude_resp.content.content
-                       else 'Claude unavailable — check sensors directly.' }}
-
-          # -------- live_return: inbound now -----------------------------------
-          - conditions:
-              - condition: template
-                value_template: "{{ (mode | trim) == 'live_return' }}"
-            sequence:
-              - service: script.commute_refresh_all
-              - delay: "00:00:05"
-              - service: rest_command.claude_api
-                data:
-                  model: "{{ states('input_text.commute_model_opus') }}"
-                  max_tokens: 300
-                  system: >-
-                    You help the user return Kaufering -> Munich RIGHT NOW.
-                    Plain text, max 5 lines, no markdown. Recommend ONE
-                    direction (via Hbf and cycle home, or direct to Solln)
-                    with the next viable departure and a one-line reason.
-                  prompt: >-
-                    Current time: {{ now().strftime('%H:%M') }}
-                    Route C Kaufering -> Munich Hbf (user cycles home):
-                      Next: {{ states('sensor.db_kaufering_return_hbf') }}
-                      Status: {{ states('sensor.commute_return_hbf_status') }}
-                      Delay: {{ state_attr('sensor.commute_return_hbf_status','delay_minutes') | default(0) | int(0) }} min
-                      Warnings: {{ state_attr('sensor.commute_return_hbf_status','messages') | default([]) }}
-                    Route D Kaufering -> Solln (direct):
-                      Next: {{ states('sensor.db_kaufering_return_solln') }}
-                      Status: {{ states('sensor.commute_return_solln_status') }}
-                      Delay: {{ state_attr('sensor.commute_return_solln_status','delay_minutes') | default(0) | int(0) }} min
-                      Warnings: {{ state_attr('sensor.commute_return_solln_status','messages') | default([]) }}
-                response_variable: claude_resp
-                continue_on_error: true
-              - service: telegram_bot.send_message
-                target:
-                  entity_id: notify.pa_bot_wolfgang_l
-                data:
-                  message: >-
-                    🏠 Return
-
-                    {{ claude_resp.content.content[0].text
-                       if claude_resp is defined
-                         and claude_resp.content is defined
-                         and claude_resp.content.content is defined
-                         and claude_resp.content.content
-                       else 'Claude unavailable — check sensors directly.' }}
-
-          # -------- tomorrow: explicit next-day 06:00 lookup -------------------
-          - conditions:
-              - condition: template
-                value_template: "{{ (mode | trim) == 'tomorrow' }}"
+                value_template: "{{ arg == 'tomorrow' }}"
             sequence:
               - variables:
-                  # Tomorrow 06:00, naive local (no TZ suffix — see comment on
-                  # rest_command.db_journeys_lookup).
-                  tomorrow_iso: >-
+                  # Tomorrow 06:00, naive local (no TZ suffix — see db_journeys_lookup).
+                  departure_iso: >-
                     {{ (now().replace(hour=6, minute=0, second=0, microsecond=0)
                         + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S') }}
-                  tomorrow_label: "{{ (now() + timedelta(days=1)).strftime('%a %d.%m') }}"
+                  day_label: "{{ (now() + timedelta(days=1)).strftime('%a %d.%m') }}"
+                  header: "🚆 Tomorrow {{ (now() + timedelta(days=1)).strftime('%a %d.%m') }}"
+                  compute_alarm: true
               - service: rest_command.db_journeys_lookup
                 data:
                   from_eva: "8005292"
                   to_eva: "8003336"
-                  departure_iso: "{{ tomorrow_iso }}"
+                  departure_iso: "{{ departure_iso }}"
                 response_variable: solln_resp
                 continue_on_error: true
               - service: rest_command.db_journeys_lookup
                 data:
                   from_eva: "8000261"
                   to_eva: "8003336"
-                  departure_iso: "{{ tomorrow_iso }}"
+                  departure_iso: "{{ departure_iso }}"
                 response_variable: hbf_resp
                 continue_on_error: true
               - variables:
@@ -586,59 +490,36 @@ automation:
                          and hbf_resp.content is defined
                          and hbf_resp.content.journeys is defined
                        else [] }}
-              - service: rest_command.claude_api
-                data:
-                  model: "{{ states('input_text.commute_model_opus') }}"
-                  max_tokens: 300
-                  system: >-
-                    You plan tomorrow's Munich -> Kaufering commute. Output
-                    EXACTLY this format, plain text, no markdown:
-                    line 1: "RECO: <Solln|Hbf> HH:MM"
-                    line 2: one-line rationale
-                    line 3: "ALARM=HH:MM"  (wake-to-door 45 min for Solln
-                            direct, 60 min for Hbf incl. 15-min cycle).
-                    If NO route is viable (both cancelled / only heavy delays),
-                    OMIT line 3 entirely and say so on line 2.
-                  prompt: >-
-                    Tomorrow ({{ tomorrow_label }}) departures from v6.db.transport.rest:
-
-                    Route A Solln -> Kaufering (direct):
-                    {% for j in solln_journeys[:3] %}
-                    {% set l = j.legs[0] %}
-                      {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}  delay={{ ((l.departureDelay | default(0) | int(0)) // 60) }}m  cancelled={{ l.cancelled | default(false) }}
-                    {% else %}
-                      (no data)
-                    {% endfor %}
-
-                    Route B Munich Hbf -> Kaufering (+15 min cycle to Hbf):
-                    {% for j in hbf_journeys[:3] %}
-                    {% set l = j.legs[0] %}
-                      {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}  delay={{ ((l.departureDelay | default(0) | int(0)) // 60) }}m  cancelled={{ l.cancelled | default(false) }}
-                    {% else %}
-                      (no data)
-                    {% endfor %}
-                response_variable: claude_resp
-                continue_on_error: true
+                  # Earliest non-cancelled Solln departure (ISO) — used to
+                  # derive the alarm. Uses namespace() so we can break the
+                  # "first match" loop idiomatically in Jinja.
+                  earliest_solln_iso: >-
+                    {%- set ns = namespace(t='') -%}
+                    {%- for j in solln_journeys -%}
+                      {%- if ns.t == '' and not (j.legs[0].cancelled | default(false)) -%}
+                        {%- set ns.t = j.legs[0].departure -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.t }}
               - variables:
-                  claude_text: >-
-                    {{ claude_resp.content.content[0].text
-                       if claude_resp is defined
-                         and claude_resp.content is defined
-                         and claude_resp.content.content is defined
-                         and claude_resp.content.content
-                       else '' }}
-                  alarm_match: "{{ claude_text | regex_findall('ALARM=(\\d{2}:\\d{2})') }}"
-                  has_alarm: "{{ alarm_match | length > 0 }}"
-                  alarm_hhmm: "{{ alarm_match[0] if alarm_match else '' }}"
+                  has_viable: "{{ earliest_solln_iso != '' }}"
+                  earliest_hhmm: >-
+                    {{ (earliest_solln_iso | as_datetime | as_local).strftime('%H:%M')
+                       if earliest_solln_iso else '' }}
+                  alarm_hhmm: >-
+                    {{ ((earliest_solln_iso | as_datetime | as_local) - timedelta(minutes=45)).strftime('%H:%M')
+                       if earliest_solln_iso else '' }}
               - service: input_text.set_value
                 target:
                   entity_id: input_text.commute_morning_summary
                 data:
-                  value: "{{ (claude_text or 'no preview')[:255] }}"
+                  value: >-
+                    {{ ('Earliest Solln ' ~ earliest_hhmm ~ ', alarm ' ~ alarm_hhmm)
+                       if has_viable else 'No viable departures' }}
               - choose:
                   - conditions:
                       - condition: template
-                        value_template: "{{ has_alarm }}"
+                        value_template: "{{ has_viable }}"
                     sequence:
                       - service: input_boolean.turn_on
                         target:
@@ -648,32 +529,101 @@ automation:
                           entity_id: input_datetime.alarm_time
                         data:
                           time: "{{ alarm_hhmm }}:00"
-                      - service: telegram_bot.send_message
-                        target:
-                          entity_id: notify.pa_bot_wolfgang_l
-                        data:
-                          message: >-
-                            🚆 Tomorrow {{ tomorrow_label }}
+              # Literal block scalar (|-) so the newlines inside the message
+              # are preserved for Telegram. No parse_mode — we render plain text.
+              - service: telegram_bot.send_message
+                target:
+                  entity_id: notify.pa_bot_wolfgang_l
+                data:
+                  message: |-
+                    🚆 Tomorrow {{ day_label }}
 
-                            {{ claude_text }}
-                default:
-                  # Plain text (no parse_mode) — legacy Telegram Markdown chokes
-                  # on underscores inside `commute_day` and the nested code span.
-                  - service: telegram_bot.send_message
-                    target:
-                      entity_id: notify.pa_bot_wolfgang_l
-                    data:
-                      message: >-
-                        🚆 Tomorrow {{ tomorrow_label }}
+                    Solln → Kaufering (direct, 45 min wake→door):
+                    {%- for j in solln_journeys[:3] %}
+                    {%- set l = j.legs[0] %}
+                    {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
+                      {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
+                    {%- else %}
+                      (no data)
+                    {%- endfor %}
 
-                        {{ claude_text if claude_text else 'Claude unavailable — no recommendation.' }}
+                    München Hbf → Kaufering (cycle to Hbf +15 min, 60 min wake→door):
+                    {%- for j in hbf_journeys[:3] %}
+                    {%- set l = j.legs[0] %}
+                    {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
+                      {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
+                    {%- else %}
+                      (no data)
+                    {%- endfor %}
 
-                        No viable alarm. commute_day left off — toggle it manually in HA if you still plan to commute.
+                    {% if has_viable -%}
+                    Earliest Solln: {{ earliest_hhmm }}  →  alarm {{ alarm_hhmm }}
+                    commute_day: ON
+                    {%- else -%}
+                    No viable departures — commute_day left off. Toggle it manually if you still plan to commute.
+                    {%- endif %}
+
+        # -------- /office (live outbound now) --------------------------------
+        default:
+          - variables:
+              departure_iso: "{{ now().strftime('%Y-%m-%dT%H:%M:%S') }}"
+          - service: rest_command.db_journeys_lookup
+            data:
+              from_eva: "8005292"
+              to_eva: "8003336"
+              departure_iso: "{{ departure_iso }}"
+            response_variable: solln_resp
+            continue_on_error: true
+          - service: rest_command.db_journeys_lookup
+            data:
+              from_eva: "8000261"
+              to_eva: "8003336"
+              departure_iso: "{{ departure_iso }}"
+            response_variable: hbf_resp
+            continue_on_error: true
+          - variables:
+              solln_journeys: >-
+                {{ solln_resp.content.journeys
+                   if solln_resp is defined
+                     and solln_resp.content is defined
+                     and solln_resp.content.journeys is defined
+                   else [] }}
+              hbf_journeys: >-
+                {{ hbf_resp.content.journeys
+                   if hbf_resp is defined
+                     and hbf_resp.content is defined
+                     and hbf_resp.content.journeys is defined
+                   else [] }}
+          - service: telegram_bot.send_message
+            target:
+              entity_id: notify.pa_bot_wolfgang_l
+            data:
+              message: |-
+                🚆 To office ({{ now().strftime('%H:%M') }})
+
+                Solln → Kaufering (direct):
+                {%- for j in solln_journeys[:3] %}
+                {%- set l = j.legs[0] %}
+                {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
+                  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
+                {%- else %}
+                  (no data)
+                {%- endfor %}
+
+                München Hbf → Kaufering (+15 min cycle to Hbf):
+                {%- for j in hbf_journeys[:3] %}
+                {%- set l = j.legs[0] %}
+                {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
+                  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
+                {%- else %}
+                  (no data)
+                {%- endfor %}
     mode: single
 
-  # ----- Telegram /home (return now, any time) ------------------------------
-  # Always live_return — useful mid-afternoon or when /office time-dispatch
-  # would pick the wrong mode. Does not toggle commute_day.
+  # ----- Telegram /home (inbound from Kaufering) ----------------------------
+  # Always inbound (Kaufering -> Munich). Overview of the next 3 departures
+  # on both directions (direct to Solln, via Hbf and cycle home). Does not
+  # toggle commute_day.
   - id: commute_telegram_home
     alias: Commute - Telegram /home
     trigger:
@@ -687,44 +637,59 @@ automation:
           entity_id: input_text.commute_last_check
         data:
           value: "{{ now().isoformat() }}"
-      - service: script.commute_refresh_all
-      - delay: "00:00:05"
-      - service: rest_command.claude_api
+      - variables:
+          departure_iso: "{{ now().strftime('%Y-%m-%dT%H:%M:%S') }}"
+      - service: rest_command.db_journeys_lookup
         data:
-          model: "{{ states('input_text.commute_model_opus') }}"
-          max_tokens: 300
-          system: >-
-            You help the user return Kaufering -> Munich RIGHT NOW.
-            Plain text, max 5 lines, no markdown. Recommend ONE direction
-            (via Hbf and cycle home, or direct to Solln) with the next
-            viable departure and a one-line reason.
-          prompt: >-
-            Current time: {{ now().strftime('%H:%M') }}
-            Route C Kaufering -> Munich Hbf (user cycles home):
-              Next: {{ states('sensor.db_kaufering_return_hbf') }}
-              Status: {{ states('sensor.commute_return_hbf_status') }}
-              Delay: {{ state_attr('sensor.commute_return_hbf_status','delay_minutes') | default(0) | int(0) }} min
-              Warnings: {{ state_attr('sensor.commute_return_hbf_status','messages') | default([]) }}
-            Route D Kaufering -> Solln (direct):
-              Next: {{ states('sensor.db_kaufering_return_solln') }}
-              Status: {{ states('sensor.commute_return_solln_status') }}
-              Delay: {{ state_attr('sensor.commute_return_solln_status','delay_minutes') | default(0) | int(0) }} min
-              Warnings: {{ state_attr('sensor.commute_return_solln_status','messages') | default([]) }}
-        response_variable: claude_resp
+          from_eva: "8003336"
+          to_eva: "8005292"
+          departure_iso: "{{ departure_iso }}"
+        response_variable: solln_resp
         continue_on_error: true
+      - service: rest_command.db_journeys_lookup
+        data:
+          from_eva: "8003336"
+          to_eva: "8000261"
+          departure_iso: "{{ departure_iso }}"
+        response_variable: hbf_resp
+        continue_on_error: true
+      - variables:
+          solln_journeys: >-
+            {{ solln_resp.content.journeys
+               if solln_resp is defined
+                 and solln_resp.content is defined
+                 and solln_resp.content.journeys is defined
+               else [] }}
+          hbf_journeys: >-
+            {{ hbf_resp.content.journeys
+               if hbf_resp is defined
+                 and hbf_resp.content is defined
+                 and hbf_resp.content.journeys is defined
+               else [] }}
       - service: telegram_bot.send_message
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
-          message: >-
-            🏠 Return
+          message: |-
+            🏠 To home ({{ now().strftime('%H:%M') }})
 
-            {{ claude_resp.content.content[0].text
-               if claude_resp is defined
-                 and claude_resp.content is defined
-                 and claude_resp.content.content is defined
-                 and claude_resp.content.content
-               else 'Claude unavailable — check sensors directly.' }}
+            Kaufering → Solln (direct):
+            {%- for j in solln_journeys[:3] %}
+            {%- set l = j.legs[0] %}
+            {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
+              {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
+            {%- else %}
+              (no data)
+            {%- endfor %}
+
+            Kaufering → München Hbf (then cycle home):
+            {%- for j in hbf_journeys[:3] %}
+            {%- set l = j.legs[0] %}
+            {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
+              {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
+            {%- else %}
+              (no data)
+            {%- endfor %}
     mode: single
 
   # ----- Daily reset (opt-in model) -----------------------------------------
