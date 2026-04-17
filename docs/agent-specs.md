@@ -18,13 +18,16 @@ Context-aware train connections for a daily Solln ↔ Kaufering commute.
 ### Telegram commands
 
 Direction-based. `/office` always outbound, `/home` always inbound — no
-time-aware dispatch, the user chooses the command.
+time-aware dispatch, the user chooses the command. Each command also
+subscribes the relevant direction to disruption alerts so pings only fire
+for the leg you care about right now.
 
 | Command | Behaviour |
 |---|---|
-| `/office` | Live overview of the next 3 Munich → Kaufering departures on both routes (Solln direct, via Hbf + cycle) |
-| `/office tomorrow` | Same overview for tomorrow from 06:00 + derived alarm (earliest non-cancelled Solln − 45 min) |
-| `/home` | Live overview of the next 3 Kaufering → Munich departures on both directions |
+| `/office` | Subscribe outbound alerts + unsubscribe return. Live overview of the next 3 Munich → Kaufering departures on both routes (Solln direct, via Hbf + cycle) |
+| `/office_tmr` | Subscribe outbound alerts for tomorrow from 06:00 + derive alarm (earliest non-cancelled Solln − 45 min). Only subscribes when viable; otherwise stays off |
+| `/home` | Subscribe return alerts + unsubscribe outbound. Live overview of the next 3 Kaufering → Munich departures on both directions |
+| `/quiet` | Unsubscribe both directions. Use when WFH / weekend / already home |
 
 Replies are a plain-text overview, one departure per line, with delays and
 cancellations marked. Claude is **not** called from any command path —
@@ -32,15 +35,30 @@ the user picks their own route.
 
 ### State machine
 
-- `commute_day` is flipped **on** only by `/office tomorrow` and only when
-  an earliest non-cancelled Solln departure exists. No fallback alarm —
-  if no departure is viable, `commute_day` stays off and the message says so.
-- `commute_day=on` enables the background automations:
-  - **Morning poll** (05:00–07:00, every 5 min): refresh outbound sensors.
-  - **Return poll** (16:00–18:00, every 10 min): refresh inbound sensors.
-  - **Disruption alert**: Telegram push on `delayed` / `cancelled`, deduped
-    per (route, date, hour).
-- **Daily reset** at 19:00: `commute_day` → off (opt-in each evening).
+Two independent booleans (`commute_outbound_alerts`,
+`commute_return_alerts`) drive polling and disruption alerts:
+
+- **`/office`** → outbound ON, return OFF.
+- **`/office_tmr`** → outbound ON (only when a non-cancelled Solln
+  departure exists; no fallback alarm), return OFF, alarm time set.
+- **`/home`** → return ON, outbound OFF.
+- **`/quiet`** → both OFF.
+- **14:00 auto-switch**: if outbound is still ON at 14:00, flip to return
+  (outbound OFF, return ON). Models "I'm in the office now, thinking about
+  the way home".
+- **19:00 daily reset**: both OFF (time-based proxy for "home by now";
+  upgrade to a `device_tracker` + `zone.home` condition once the HA
+  Companion app is wired up).
+
+Background automations gated on the subscription booleans:
+
+- **Morning poll** (05:00–07:00, every 5 min): refresh outbound sensors
+  only while `commute_outbound_alerts=on`.
+- **Return poll** (16:00–18:00, every 10 min): refresh inbound sensors
+  only while `commute_return_alerts=on`.
+- **Disruption alert**: Telegram push on `delayed` / `cancelled`, gated
+  per direction (return-route sensors check the return boolean, outbound
+  sensors check the outbound one). Deduped per (route, date, hour).
 
 ### Signal vs. noise
 

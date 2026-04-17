@@ -49,7 +49,8 @@ Each agent is a self-contained HA package under `ha-config/packages/`.
 ## Where state lives
 
 - API results: `sensor.db_*` (REST), `sensor.commute_*_status` (template)
-- User-toggled: `input_boolean.commute_day`, `input_datetime.alarm_time`
+- User-toggled: `input_boolean.commute_outbound_alerts`,
+  `input_boolean.commute_return_alerts`, `input_datetime.alarm_time`
 - Last outputs: `input_text.commute_morning_summary`,
   `input_text.commute_last_alert_fingerprint`
 - Config knobs: `input_number.commute_delay_threshold_min`,

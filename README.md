@@ -37,8 +37,12 @@ Start here: [`docs/architecture.md`](docs/architecture.md) then
 4. `python -m pytest tests/` — unit-tests the parser against fixture data.
 5. Follow [`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to drop
    `ha-config/packages/commute.yaml` onto the Pi.
-6. Telegram commands:
-   - `/office` — next 3 Munich → Kaufering departures on both routes (Solln
-     direct, via Hbf + cycle)
-   - `/office tomorrow` — same for tomorrow from 06:00 + derived alarm
-   - `/home` — next 3 Kaufering → Munich departures on both directions
+6. Telegram commands (each also manages alert subscriptions so disruption
+   pings only fire for the direction you care about right now):
+   - `/office` — outbound subscribe + next 3 Munich → Kaufering
+     departures on both routes (Solln direct, via Hbf + cycle)
+   - `/office_tmr` — outbound subscribe + alarm for tomorrow from 06:00
+     (earliest non-cancelled Solln − 45 min; only subscribes if viable)
+   - `/home` — return subscribe + next 3 Kaufering → Munich departures on
+     both directions
+   - `/quiet` — unsubscribe both directions
