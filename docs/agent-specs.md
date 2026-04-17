@@ -15,17 +15,40 @@ Context-aware train connections for a daily Solln ↔ Kaufering commute.
 | C | Return | Kaufering | München Hbf | User cycles home |
 | D | Return | Kaufering | Solln | Direct |
 
-### Modes
+### Telegram commands
 
-1. **Evening check-in:** User sends `/office` to Telegram bot → fetch
-   next-day connections for both routes → Claude suggests alarm → sets
-   `input_boolean.commute_day = on`.
-2. **Morning live (05:00–07:00):** Every 5 min when `commute_day=on` → poll
-   DB API → disruption alerts via Telegram.
-3. **Return (16:00–18:00):** Every 10 min when `commute_day=on` → Kaufering
-   departures both directions.
-4. **No commute day:** Agent sleeps — no API polling.
-5. **Daily reset (19:00):** `commute_day` turns off automatically.
+`/office` is time-aware. The mode is picked from the local hour unless an
+explicit arg overrides:
+
+| Command | Behaviour |
+|---|---|
+| `/office` (hour < 14) | `live_morning` — polled outbound sensors, Claude recommends next train |
+| `/office` (14 ≤ hour < 19) | `live_return` — polled inbound sensors, Claude recommends |
+| `/office` (hour ≥ 19) | `tomorrow` — explicit 06:00 lookup, Claude suggests alarm |
+| `/office now` | force `live_morning` |
+| `/office tomorrow` | force `tomorrow` |
+| `/home` | always `live_return` |
+
+Replies contain **only** Claude's recommendation — no raw sensor dump.
+
+### State machine
+
+- `commute_day` is flipped **on** only in tomorrow mode and only when Claude
+  returns a viable `ALARM=HH:MM` line. No fallback alarm — if no route is
+  viable, `commute_day` stays off and the user is told to toggle it manually.
+- `commute_day=on` enables the background automations:
+  - **Morning poll** (05:00–07:00, every 5 min): refresh outbound sensors.
+  - **Return poll** (16:00–18:00, every 10 min): refresh inbound sensors.
+  - **Disruption alert**: Telegram push on `delayed` / `cancelled`, deduped
+    per (route, date, hour).
+- **Daily reset** at 19:00: `commute_day` → off (opt-in each evening).
+
+### Signal vs. noise
+
+`remarks[]` from hafas-client v6 mixes `type=warning` (service disruptions)
+with `type=hint` / `type=status` (WC, bike, alcohol-ban etc.). The template
+sensors filter to `type=='warning'` only, so the `messages` attribute and
+Claude prompts stay focused on actionable disruptions.
 
 ### HA entities
 

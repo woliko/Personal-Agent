@@ -167,29 +167,28 @@ Confirm you see all of these (they may show `unknown` until first poll):
 4. Go back to **States** → filter `db_` → sensors should now show departure
    times (e.g., `07:23`)
 
-### Step 9 — Test Telegram check-in
+### Step 9 — Test Telegram commands
 
-Open **Telegram** on your iPhone and send `/office` to your HA bot.
+Open **Telegram** on your iPhone and try these against your HA bot:
 
-Expected response (within ~15s):
+| Command | When to use | Expected reply |
+|---|---|---|
+| `/office` | Any time; hour-aware | 🚆 Morning / 🏠 Return / 🚆 Tomorrow header + Claude recommendation |
+| `/office now` | Force morning outbound | 🚆 Morning + next train recommendation |
+| `/office tomorrow` | Force tomorrow lookup | 🚆 Tomorrow {day} + route + `ALARM=HH:MM` |
+| `/home` | Any time, returning from Kaufering | 🏠 Return + next inbound recommendation |
 
-```
-🚆 Commute set for tomorrow
+Tomorrow mode only flips `commute_day` on when Claude returns a viable
+`ALARM=` line. If no route is viable (e.g. both cancelled overnight), the
+reply says so and `commute_day` stays off — toggle it manually in HA if you
+still plan to commute.
 
-[Claude's route comparison + alarm suggestion]
-
-Suggested alarm: 06:15
-
-Solln  → Kaufering: 07:23 (ok)
-Hbf    → Kaufering: 07:08 (ok)
-```
-
-If the Claude API part fails (no preview text), check:
+If the Claude API part fails (generic "Claude unavailable" text), check:
 - `secrets.yaml` has the correct `anthropic_api_key`
 - SSH: `ha core logs | grep rest_command` for errors
 
 The basic commute tracking (sensors + disruption alerts) works even without
-Claude API — only the alarm suggestion and preview text need it.
+Claude API — only the recommendation text needs it.
 
 ### Step 10 — Verify disruption alerts
 

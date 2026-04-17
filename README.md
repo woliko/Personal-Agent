@@ -37,4 +37,8 @@ Start here: [`docs/architecture.md`](docs/architecture.md) then
 4. `python -m pytest tests/` — unit-tests the parser against fixture data.
 5. Follow [`docs/ha-setup-guide.md`](docs/ha-setup-guide.md) to drop
    `ha-config/packages/commute.yaml` onto the Pi.
-6. Send `/office` to the Telegram bot the evening before a commute day.
+6. Telegram commands:
+   - `/office` — time-aware (morning recommendation, afternoon return, or
+     tomorrow's alarm depending on the hour)
+   - `/office now` / `/office tomorrow` — force the mode
+   - `/home` — next return connection from Kaufering, any time
