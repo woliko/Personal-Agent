@@ -531,30 +531,37 @@ automation:
                           time: "{{ alarm_hhmm }}:00"
               # Literal block scalar (|-) so the newlines inside the message
               # are preserved for Telegram. No parse_mode — we render plain text.
+              # The `render` macro prints each journey's legs: the first
+              # leg's departure, an optional +N min / CANCELLED annotation,
+              # then "→ arr  |  dep → arr" for each leg so transfers show.
               - service: telegram_bot.send_message
                 target:
                   entity_id: notify.pa_bot_wolfgang_l
                 data:
                   message: |-
+                    {%- macro render(journeys) -%}
+                    {%- for j in journeys[:3] %}
+                    {%- set first = j.legs[0] %}
+                    {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
+                    {%- set ns = namespace(cc=false) %}
+                    {%- for l in j.legs %}{%- if l.cancelled | default(false) %}{%- set ns.cc = true %}{%- endif %}{%- endfor %}
+                      {{ (first.departure | as_datetime | as_local).strftime('%H:%M') }}
+                    {%- if ns.cc %}  CANCELLED
+                    {%- else %}
+                    {%- if dm > 0 %}  +{{ dm }} min{% endif %}
+                    {%- for l in j.legs %}
+                    {%- if not loop.first %}  |  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% endif %}  →  {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') }}
+                    {%- endfor %}
+                    {%- endif %}
+                    {%- else %}
+                      (no data)
+                    {%- endfor %}
+                    {%- endmacro -%}
                     🚆 Tomorrow {{ day_label }}
 
-                    Solln → Kaufering (direct, 45 min wake→door):
-                    {%- for j in solln_journeys[:3] %}
-                    {%- set l = j.legs[0] %}
-                    {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
-                      {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
-                    {%- else %}
-                      (no data)
-                    {%- endfor %}
+                    Solln → Hbf → Kaufering (45 min wake→door):{{ render(solln_journeys) }}
 
-                    München Hbf → Kaufering (cycle to Hbf +15 min, 60 min wake→door):
-                    {%- for j in hbf_journeys[:3] %}
-                    {%- set l = j.legs[0] %}
-                    {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
-                      {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
-                    {%- else %}
-                      (no data)
-                    {%- endfor %}
+                    München Hbf → Kaufering (+15 min cycle to Hbf, 60 min wake→door):{{ render(hbf_journeys) }}
 
                     {% if has_viable -%}
                     Earliest Solln: {{ earliest_hhmm }}  →  alarm {{ alarm_hhmm }}
@@ -599,25 +606,29 @@ automation:
               entity_id: notify.pa_bot_wolfgang_l
             data:
               message: |-
+                {%- macro render(journeys) -%}
+                {%- for j in journeys[:3] %}
+                {%- set first = j.legs[0] %}
+                {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
+                {%- set ns = namespace(cc=false) %}
+                {%- for l in j.legs %}{%- if l.cancelled | default(false) %}{%- set ns.cc = true %}{%- endif %}{%- endfor %}
+                  {{ (first.departure | as_datetime | as_local).strftime('%H:%M') }}
+                {%- if ns.cc %}  CANCELLED
+                {%- else %}
+                {%- if dm > 0 %}  +{{ dm }} min{% endif %}
+                {%- for l in j.legs %}
+                {%- if not loop.first %}  |  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% endif %}  →  {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') }}
+                {%- endfor %}
+                {%- endif %}
+                {%- else %}
+                  (no data)
+                {%- endfor %}
+                {%- endmacro -%}
                 🚆 To office ({{ now().strftime('%H:%M') }})
 
-                Solln → Kaufering (direct):
-                {%- for j in solln_journeys[:3] %}
-                {%- set l = j.legs[0] %}
-                {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
-                  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
-                {%- else %}
-                  (no data)
-                {%- endfor %}
+                Solln → Hbf → Kaufering:{{ render(solln_journeys) }}
 
-                München Hbf → Kaufering (+15 min cycle to Hbf):
-                {%- for j in hbf_journeys[:3] %}
-                {%- set l = j.legs[0] %}
-                {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
-                  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
-                {%- else %}
-                  (no data)
-                {%- endfor %}
+                München Hbf → Kaufering:{{ render(hbf_journeys) }}
     mode: single
 
   # ----- Telegram /home (inbound from Kaufering) ----------------------------
@@ -671,25 +682,29 @@ automation:
           entity_id: notify.pa_bot_wolfgang_l
         data:
           message: |-
+            {%- macro render(journeys) -%}
+            {%- for j in journeys[:3] %}
+            {%- set first = j.legs[0] %}
+            {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
+            {%- set ns = namespace(cc=false) %}
+            {%- for l in j.legs %}{%- if l.cancelled | default(false) %}{%- set ns.cc = true %}{%- endif %}{%- endfor %}
+              {{ (first.departure | as_datetime | as_local).strftime('%H:%M') }}
+            {%- if ns.cc %}  CANCELLED
+            {%- else %}
+            {%- if dm > 0 %}  +{{ dm }} min{% endif %}
+            {%- for l in j.legs %}
+            {%- if not loop.first %}  |  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% endif %}  →  {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') }}
+            {%- endfor %}
+            {%- endif %}
+            {%- else %}
+              (no data)
+            {%- endfor %}
+            {%- endmacro -%}
             🏠 To home ({{ now().strftime('%H:%M') }})
 
-            Kaufering → Solln (direct):
-            {%- for j in solln_journeys[:3] %}
-            {%- set l = j.legs[0] %}
-            {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
-              {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
-            {%- else %}
-              (no data)
-            {%- endfor %}
+            Kaufering → Hbf → Solln:{{ render(solln_journeys) }}
 
-            Kaufering → München Hbf (then cycle home):
-            {%- for j in hbf_journeys[:3] %}
-            {%- set l = j.legs[0] %}
-            {%- set dm = (l.departureDelay | default(0) | int(0)) // 60 %}
-              {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% if l.cancelled | default(false) %}  CANCELLED{% elif dm > 0 %}  +{{ dm }} min{% endif %}
-            {%- else %}
-              (no data)
-            {%- endfor %}
+            Kaufering → München Hbf (then cycle home):{{ render(hbf_journeys) }}
     mode: single
 
   # ----- Daily reset (opt-in model) -----------------------------------------
