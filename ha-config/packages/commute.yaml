@@ -271,8 +271,13 @@ rest_command:
   # scheduled poll (and so we can query a departure time outside the default
   # "now" window). EVA IDs are passed in by the caller — we do NOT hard-code
   # station names anywhere in URL templates.
+  #
+  # departure_iso MUST be naive local time (no TZ suffix, no "Z"). A `+02:00`
+  # suffix gets interpreted as a space inside a URL query string (standard
+  # application/x-www-form-urlencoded behaviour) and breaks the hafas-client
+  # parser; v6 then silently returns an empty `journeys: []`.
   db_journeys_lookup:
-    url: "https://v6.db.transport.rest/journeys?from={{ from_eva }}&to={{ to_eva }}&departure={{ departure_iso | urlencode }}&results=3"
+    url: "https://v6.db.transport.rest/journeys?from={{ from_eva }}&to={{ to_eva }}&departure={{ departure_iso }}&results=3"
     method: GET
     timeout: 20
 
@@ -375,16 +380,17 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
+          # No parse_mode — DB remarks can contain arbitrary characters and
+          # would trip Telegram's legacy Markdown parser.
           message: >-
-            🚆 *Commute disruption*
+            🚆 Commute disruption
 
-            Route: `{{ trigger.to_state.attributes.route_label | default(trigger.entity_id) }}`
-            Status: *{{ trigger.to_state.state }}*
+            Route: {{ trigger.to_state.attributes.route_label | default(trigger.entity_id) }}
+            Status: {{ trigger.to_state.state }}
             Delay: {{ trigger.to_state.attributes.delay_minutes | default(0) | int(0) }} min
             {% if trigger.to_state.attributes.messages %}
             Notes: {{ trigger.to_state.attributes.messages | join('; ') }}
             {% endif %}
-          parse_mode: markdown
     mode: queued
     max: 10
 
@@ -485,8 +491,10 @@ automation:
                 target:
                   entity_id: notify.pa_bot_wolfgang_l
                 data:
+                  # No parse_mode — Claude's text could contain any characters
+                  # and a stray '*' or '_' would fail Telegram markdown parsing.
                   message: >-
-                    🚆 *Morning*
+                    🚆 Morning
 
                     {{ claude_resp.content.content[0].text
                        if claude_resp is defined
@@ -494,7 +502,6 @@ automation:
                          and claude_resp.content.content is defined
                          and claude_resp.content.content
                        else 'Claude unavailable — check sensors directly.' }}
-                  parse_mode: markdown
 
           # -------- live_return: inbound now -----------------------------------
           - conditions:
@@ -531,7 +538,7 @@ automation:
                   entity_id: notify.pa_bot_wolfgang_l
                 data:
                   message: >-
-                    🏠 *Return*
+                    🏠 Return
 
                     {{ claude_resp.content.content[0].text
                        if claude_resp is defined
@@ -539,7 +546,6 @@ automation:
                          and claude_resp.content.content is defined
                          and claude_resp.content.content
                        else 'Claude unavailable — check sensors directly.' }}
-                  parse_mode: markdown
 
           # -------- tomorrow: explicit next-day 06:00 lookup -------------------
           - conditions:
@@ -547,10 +553,11 @@ automation:
                 value_template: "{{ (mode | trim) == 'tomorrow' }}"
             sequence:
               - variables:
-                  # Tomorrow 06:00 local. `timedelta` is available in HA Jinja.
+                  # Tomorrow 06:00, naive local (no TZ suffix — see comment on
+                  # rest_command.db_journeys_lookup).
                   tomorrow_iso: >-
                     {{ (now().replace(hour=6, minute=0, second=0, microsecond=0)
-                        + timedelta(days=1)).isoformat() }}
+                        + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S') }}
                   tomorrow_label: "{{ (now() + timedelta(days=1)).strftime('%a %d.%m') }}"
               - service: rest_command.db_journeys_lookup
                 data:
@@ -646,22 +653,22 @@ automation:
                           entity_id: notify.pa_bot_wolfgang_l
                         data:
                           message: >-
-                            🚆 *Tomorrow {{ tomorrow_label }}*
+                            🚆 Tomorrow {{ tomorrow_label }}
 
                             {{ claude_text }}
-                          parse_mode: markdown
                 default:
+                  # Plain text (no parse_mode) — legacy Telegram Markdown chokes
+                  # on underscores inside `commute_day` and the nested code span.
                   - service: telegram_bot.send_message
                     target:
                       entity_id: notify.pa_bot_wolfgang_l
                     data:
                       message: >-
-                        🚆 *Tomorrow {{ tomorrow_label }}*
+                        🚆 Tomorrow {{ tomorrow_label }}
 
                         {{ claude_text if claude_text else 'Claude unavailable — no recommendation.' }}
 
-                        _No viable alarm — `commute_day` left off. Toggle it manually in HA if you still plan to commute._
-                      parse_mode: markdown
+                        No viable alarm. commute_day left off — toggle it manually in HA if you still plan to commute.
     mode: single
 
   # ----- Telegram /home (return now, any time) ------------------------------
@@ -710,7 +717,7 @@ automation:
           entity_id: notify.pa_bot_wolfgang_l
         data:
           message: >-
-            🏠 *Return*
+            🏠 Return
 
             {{ claude_resp.content.content[0].text
                if claude_resp is defined
@@ -718,7 +725,6 @@ automation:
                  and claude_resp.content.content is defined
                  and claude_resp.content.content
                else 'Claude unavailable — check sensors directly.' }}
-          parse_mode: markdown
     mode: single
 
   # ----- Daily reset (opt-in model) -----------------------------------------
