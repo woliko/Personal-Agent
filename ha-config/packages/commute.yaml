@@ -354,6 +354,8 @@ automation:
             {% set bucket = now().strftime('%Y-%m-%d-%H') %}
             {{ trigger.entity_id }}:{{ trigger.to_state.state }}:{{ bucket }}
       - service: telegram_bot.send_message
+        target:
+          entity_id: notify.pa_bot
         data:
           message: >-
             🚆 *Commute disruption*
@@ -384,6 +386,8 @@ automation:
         state: "on"
     action:
       - service: telegram_bot.send_message
+        target:
+          entity_id: notify.pa_bot
         data:
           message: >-
             ⚠️ *Commute API stale*
@@ -515,8 +519,9 @@ automation:
           time: "{{ alarm_hhmm }}:00"
 
       - service: telegram_bot.send_message
+        target:
+          entity_id: notify.pa_bot
         data:
-          target: "{{ trigger.event.data.chat_id }}"
           message: >-
             🚆 *Commute set for tomorrow*
 
