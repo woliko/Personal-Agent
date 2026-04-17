@@ -355,7 +355,7 @@ automation:
             {{ trigger.entity_id }}:{{ trigger.to_state.state }}:{{ bucket }}
       - service: telegram_bot.send_message
         target:
-          entity_id: notify.pa_bot
+          entity_id: notify.pa_bot_wolfgang_l
         data:
           message: >-
             🚆 *Commute disruption*
@@ -387,7 +387,7 @@ automation:
     action:
       - service: telegram_bot.send_message
         target:
-          entity_id: notify.pa_bot
+          entity_id: notify.pa_bot_wolfgang_l
         data:
           message: >-
             ⚠️ *Commute API stale*
@@ -520,7 +520,7 @@ automation:
 
       - service: telegram_bot.send_message
         target:
-          entity_id: notify.pa_bot
+          entity_id: notify.pa_bot_wolfgang_l
         data:
           message: >-
             🚆 *Commute set for tomorrow*
