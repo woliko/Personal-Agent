@@ -494,6 +494,15 @@ automation:
         response_variable: hbf_resp
         continue_on_error: true
       - variables:
+          # status defaults to 0 if the rest_command never returned (network
+          # error, timeout, etc.); render() treats anything != 200 as an API
+          # failure and surfaces the code instead of a misleading "(no data)".
+          solln_status: >-
+            {{ solln_resp.status | default(0) | int(0)
+               if solln_resp is defined else 0 }}
+          hbf_status: >-
+            {{ hbf_resp.status | default(0) | int(0)
+               if hbf_resp is defined else 0 }}
           solln_journeys: >-
             {{ solln_resp.content.journeys
                if solln_resp is defined
@@ -511,7 +520,12 @@ automation:
           entity_id: notify.pa_bot_wolfgang_l
         data:
           message: |-
-            {%- macro render(journeys) -%}
+            {%- macro render(journeys, status) -%}
+            {%- if status != 200 %}
+              ⚠ API HTTP {{ status }} (v6.db.transport.rest)
+            {%- elif journeys | length == 0 %}
+              (no data)
+            {%- else %}
             {%- for j in journeys[:3] %}
             {%- set first = j.legs[0] %}
             {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
@@ -525,19 +539,14 @@ automation:
             {%- if not loop.first %}  |  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% endif %}  →  {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') }}
             {%- endfor %}
             {%- endif %}
-            {%- else %}
-              (no data)
             {%- endfor %}
+            {%- endif %}
             {%- endmacro -%}
             🚆 To office ({{ now().strftime('%H:%M') }})  ·  outbound alerts ON
 
-            Solln → Hbf → Kaufering:{{ render(solln_journeys) }}
+            Solln → Hbf → Kaufering:{{ render(solln_journeys, solln_status) }}
 
-            München Hbf → Kaufering:{{ render(hbf_journeys) }}
-
-            — diag —
-            solln: {{ solln_resp | default('UNDEFINED') | to_json | truncate(400, true, '…', 0) }}
-            hbf:   {{ hbf_resp | default('UNDEFINED') | to_json | truncate(400, true, '…', 0) }}
+            München Hbf → Kaufering:{{ render(hbf_journeys, hbf_status) }}
     mode: single
 
   # ----- Telegram /office_tmr (plan tomorrow morning) -----------------------
@@ -579,6 +588,12 @@ automation:
         response_variable: hbf_resp
         continue_on_error: true
       - variables:
+          solln_status: >-
+            {{ solln_resp.status | default(0) | int(0)
+               if solln_resp is defined else 0 }}
+          hbf_status: >-
+            {{ hbf_resp.status | default(0) | int(0)
+               if hbf_resp is defined else 0 }}
           solln_journeys: >-
             {{ solln_resp.content.journeys
                if solln_resp is defined
@@ -641,7 +656,12 @@ automation:
           entity_id: notify.pa_bot_wolfgang_l
         data:
           message: |-
-            {%- macro render(journeys) -%}
+            {%- macro render(journeys, status) -%}
+            {%- if status != 200 %}
+              ⚠ API HTTP {{ status }} (v6.db.transport.rest)
+            {%- elif journeys | length == 0 %}
+              (no data)
+            {%- else %}
             {%- for j in journeys[:3] %}
             {%- set first = j.legs[0] %}
             {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
@@ -655,15 +675,14 @@ automation:
             {%- if not loop.first %}  |  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% endif %}  →  {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') }}
             {%- endfor %}
             {%- endif %}
-            {%- else %}
-              (no data)
             {%- endfor %}
+            {%- endif %}
             {%- endmacro -%}
             🚆 Tomorrow {{ day_label }}
 
-            Solln → Hbf → Kaufering (45 min wake→door):{{ render(solln_journeys) }}
+            Solln → Hbf → Kaufering (45 min wake→door):{{ render(solln_journeys, solln_status) }}
 
-            München Hbf → Kaufering (+15 min cycle to Hbf, 60 min wake→door):{{ render(hbf_journeys) }}
+            München Hbf → Kaufering (+15 min cycle to Hbf, 60 min wake→door):{{ render(hbf_journeys, hbf_status) }}
 
             {% if has_viable -%}
             Earliest Solln: {{ earliest_hhmm }}  →  alarm {{ alarm_hhmm }}
@@ -712,6 +731,12 @@ automation:
         response_variable: hbf_resp
         continue_on_error: true
       - variables:
+          solln_status: >-
+            {{ solln_resp.status | default(0) | int(0)
+               if solln_resp is defined else 0 }}
+          hbf_status: >-
+            {{ hbf_resp.status | default(0) | int(0)
+               if hbf_resp is defined else 0 }}
           solln_journeys: >-
             {{ solln_resp.content.journeys
                if solln_resp is defined
@@ -729,7 +754,12 @@ automation:
           entity_id: notify.pa_bot_wolfgang_l
         data:
           message: |-
-            {%- macro render(journeys) -%}
+            {%- macro render(journeys, status) -%}
+            {%- if status != 200 %}
+              ⚠ API HTTP {{ status }} (v6.db.transport.rest)
+            {%- elif journeys | length == 0 %}
+              (no data)
+            {%- else %}
             {%- for j in journeys[:3] %}
             {%- set first = j.legs[0] %}
             {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
@@ -743,15 +773,14 @@ automation:
             {%- if not loop.first %}  |  {{ (l.departure | as_datetime | as_local).strftime('%H:%M') }}{% endif %}  →  {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') }}
             {%- endfor %}
             {%- endif %}
-            {%- else %}
-              (no data)
             {%- endfor %}
+            {%- endif %}
             {%- endmacro -%}
             🏠 To home ({{ now().strftime('%H:%M') }})  ·  return alerts ON
 
-            Kaufering → Hbf → Solln:{{ render(solln_journeys) }}
+            Kaufering → Hbf → Solln:{{ render(solln_journeys, solln_status) }}
 
-            Kaufering → München Hbf (then cycle home):{{ render(hbf_journeys) }}
+            Kaufering → München Hbf (then cycle home):{{ render(hbf_journeys, hbf_status) }}
     mode: single
 
   # ----- Telegram /quiet ----------------------------------------------------
