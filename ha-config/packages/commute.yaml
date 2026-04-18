@@ -407,16 +407,20 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
-          # No parse_mode — DB remarks can contain arbitrary characters and
-          # would trip Telegram's legacy Markdown parser.
+          # parse_mode: html chosen deliberately — telegram_bot integration
+          # default is markdown, which trips on `+`, `|`, `(`, `.` etc. that
+          # appear all over the rendered journey output. HTML only cares
+          # about `< > &`, which we don't emit ourselves; DB remarks below
+          # are run through | e to html-escape in case hafas returns any.
+          parse_mode: html
           message: >-
             🚆 Commute disruption
 
-            Route: {{ trigger.to_state.attributes.route_label | default(trigger.entity_id) }}
-            Status: {{ trigger.to_state.state }}
+            Route: {{ (trigger.to_state.attributes.route_label | default(trigger.entity_id)) | e }}
+            Status: {{ trigger.to_state.state | e }}
             Delay: {{ trigger.to_state.attributes.delay_minutes | default(0) | int(0) }} min
             {% if trigger.to_state.attributes.messages %}
-            Notes: {{ trigger.to_state.attributes.messages | join('; ') }}
+            Notes: {{ (trigger.to_state.attributes.messages | join('; ')) | e }}
             {% endif %}
     mode: queued
     max: 10
@@ -446,12 +450,12 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
+          parse_mode: html
           message: >-
-            ⚠️ *Commute API stale*
+            ⚠️ <b>Commute API stale</b>
 
             DB REST sensors have been unavailable for 15+ min. Disruption
             alerts may be missing. Check HA logs or v6.db.transport.rest status.
-          parse_mode: markdown
     mode: single
 
   # ----- Telegram /office (outbound to Kaufering, live) ---------------------
@@ -519,6 +523,7 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
+          parse_mode: html
           message: |-
             {%- macro render(journeys, status) -%}
             {%- if status != 200 %}
@@ -655,6 +660,7 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
+          parse_mode: html
           message: |-
             {%- macro render(journeys, status) -%}
             {%- if status != 200 %}
@@ -753,6 +759,7 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
+          parse_mode: html
           message: |-
             {%- macro render(journeys, status) -%}
             {%- if status != 200 %}
@@ -803,6 +810,7 @@ automation:
         target:
           entity_id: notify.pa_bot_wolfgang_l
         data:
+          parse_mode: html
           message: "🔕 Commute alerts off (outbound + return)."
     mode: single
 
