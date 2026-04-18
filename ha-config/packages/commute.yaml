@@ -533,27 +533,17 @@ automation:
             {%- else %}
             {%- for j in journeys[:3] %}
             {%- set first = j.legs[0] %}
-            {%- set last = j.legs[-1] %}
             {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
             {%- set ns = namespace(cc=false) %}
             {%- for l in j.legs %}{%- if l.cancelled | default(false) %}{%- set ns.cc = true %}{%- endif %}{%- endfor %}
-            {# hafas-client flags walking/transfer legs with walking=true; rejectattr('walking') drops any leg where walking is truthy (keeps train legs regardless of whether walking is explicitly false or absent). #}
-            {%- set transport_legs = (j.legs | rejectattr('walking') | list | count) %}
-            {%- set transfers = (transport_legs - 1) if transport_legs > 0 else 0 %}
-            {%- set dur_s = ((last.arrival | as_datetime) - (first.departure | as_datetime)).total_seconds() | int %}
-            {%- set h = dur_s // 3600 %}
-            {%- set m = (dur_s % 3600) // 60 %}
-              {{ (first.departure | as_datetime | as_local).strftime('%H:%M') }}{% if dm > 0 %} +{{ dm }}{% endif %} → {{ (last.arrival | as_datetime | as_local).strftime('%H:%M') }}
-            {%- if ns.cc %}  CANCELLED
-            {%- else %}  ·
-              {%- if transfers == 0 %} direct
-              {%- elif transfers == 1 %} 1 transfer
-              {%- else %} {{ transfers }} transfers
-              {%- endif %}
-              {%- if h > 0 %}, {{ h }}h{{ '%02d' % m }}
-              {%- else %}, {{ m }}m
-              {%- endif %}
-            {%- endif %}
+            {# Drop walking/transfer legs (hafas flags them with walking=true) so we only emit one dep → arr pair per train. Typical commute: 2 trains (Solln-Hbf-Kaufering), sometimes 3 late at night. #}
+            {%- set train_legs = j.legs | rejectattr('walking') | list %}
+              {% for l in train_legs -%}
+                {%- if not loop.first %} | {% endif -%}
+                {{ (l.departure | as_datetime | as_local).strftime('%H:%M') -}}
+                {%- if loop.first and dm > 0 %} +{{ dm }}{% endif %} → {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') -}}
+              {%- endfor %}
+              {%- if ns.cc %}  CANCELLED{% endif %}
             {%- endfor %}
             {%- endif %}
             {%- endmacro -%}
@@ -680,27 +670,17 @@ automation:
             {%- else %}
             {%- for j in journeys[:3] %}
             {%- set first = j.legs[0] %}
-            {%- set last = j.legs[-1] %}
             {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
             {%- set ns = namespace(cc=false) %}
             {%- for l in j.legs %}{%- if l.cancelled | default(false) %}{%- set ns.cc = true %}{%- endif %}{%- endfor %}
-            {# hafas-client flags walking/transfer legs with walking=true; rejectattr('walking') drops any leg where walking is truthy (keeps train legs regardless of whether walking is explicitly false or absent). #}
-            {%- set transport_legs = (j.legs | rejectattr('walking') | list | count) %}
-            {%- set transfers = (transport_legs - 1) if transport_legs > 0 else 0 %}
-            {%- set dur_s = ((last.arrival | as_datetime) - (first.departure | as_datetime)).total_seconds() | int %}
-            {%- set h = dur_s // 3600 %}
-            {%- set m = (dur_s % 3600) // 60 %}
-              {{ (first.departure | as_datetime | as_local).strftime('%H:%M') }}{% if dm > 0 %} +{{ dm }}{% endif %} → {{ (last.arrival | as_datetime | as_local).strftime('%H:%M') }}
-            {%- if ns.cc %}  CANCELLED
-            {%- else %}  ·
-              {%- if transfers == 0 %} direct
-              {%- elif transfers == 1 %} 1 transfer
-              {%- else %} {{ transfers }} transfers
-              {%- endif %}
-              {%- if h > 0 %}, {{ h }}h{{ '%02d' % m }}
-              {%- else %}, {{ m }}m
-              {%- endif %}
-            {%- endif %}
+            {# Drop walking/transfer legs (hafas flags them with walking=true) so we only emit one dep → arr pair per train. Typical commute: 2 trains (Solln-Hbf-Kaufering), sometimes 3 late at night. #}
+            {%- set train_legs = j.legs | rejectattr('walking') | list %}
+              {% for l in train_legs -%}
+                {%- if not loop.first %} | {% endif -%}
+                {{ (l.departure | as_datetime | as_local).strftime('%H:%M') -}}
+                {%- if loop.first and dm > 0 %} +{{ dm }}{% endif %} → {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') -}}
+              {%- endfor %}
+              {%- if ns.cc %}  CANCELLED{% endif %}
             {%- endfor %}
             {%- endif %}
             {%- endmacro -%}
@@ -789,27 +769,17 @@ automation:
             {%- else %}
             {%- for j in journeys[:3] %}
             {%- set first = j.legs[0] %}
-            {%- set last = j.legs[-1] %}
             {%- set dm = (first.departureDelay | default(0) | int(0)) // 60 %}
             {%- set ns = namespace(cc=false) %}
             {%- for l in j.legs %}{%- if l.cancelled | default(false) %}{%- set ns.cc = true %}{%- endif %}{%- endfor %}
-            {# hafas-client flags walking/transfer legs with walking=true; rejectattr('walking') drops any leg where walking is truthy (keeps train legs regardless of whether walking is explicitly false or absent). #}
-            {%- set transport_legs = (j.legs | rejectattr('walking') | list | count) %}
-            {%- set transfers = (transport_legs - 1) if transport_legs > 0 else 0 %}
-            {%- set dur_s = ((last.arrival | as_datetime) - (first.departure | as_datetime)).total_seconds() | int %}
-            {%- set h = dur_s // 3600 %}
-            {%- set m = (dur_s % 3600) // 60 %}
-              {{ (first.departure | as_datetime | as_local).strftime('%H:%M') }}{% if dm > 0 %} +{{ dm }}{% endif %} → {{ (last.arrival | as_datetime | as_local).strftime('%H:%M') }}
-            {%- if ns.cc %}  CANCELLED
-            {%- else %}  ·
-              {%- if transfers == 0 %} direct
-              {%- elif transfers == 1 %} 1 transfer
-              {%- else %} {{ transfers }} transfers
-              {%- endif %}
-              {%- if h > 0 %}, {{ h }}h{{ '%02d' % m }}
-              {%- else %}, {{ m }}m
-              {%- endif %}
-            {%- endif %}
+            {# Drop walking/transfer legs (hafas flags them with walking=true) so we only emit one dep → arr pair per train. Typical commute: 2 trains (Solln-Hbf-Kaufering), sometimes 3 late at night. #}
+            {%- set train_legs = j.legs | rejectattr('walking') | list %}
+              {% for l in train_legs -%}
+                {%- if not loop.first %} | {% endif -%}
+                {{ (l.departure | as_datetime | as_local).strftime('%H:%M') -}}
+                {%- if loop.first and dm > 0 %} +{{ dm }}{% endif %} → {{ (l.arrival | as_datetime | as_local).strftime('%H:%M') -}}
+              {%- endfor %}
+              {%- if ns.cc %}  CANCELLED{% endif %}
             {%- endfor %}
             {%- endif %}
             {%- endmacro -%}
