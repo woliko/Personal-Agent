@@ -534,6 +534,10 @@ automation:
             Solln → Hbf → Kaufering:{{ render(solln_journeys) }}
 
             München Hbf → Kaufering:{{ render(hbf_journeys) }}
+
+            — diag —
+            solln: {{ solln_resp | default('UNDEFINED') | to_json | truncate(400, true, '…', 0) }}
+            hbf:   {{ hbf_resp | default('UNDEFINED') | to_json | truncate(400, true, '…', 0) }}
     mode: single
 
   # ----- Telegram /office_tmr (plan tomorrow morning) -----------------------
