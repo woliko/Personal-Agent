@@ -285,18 +285,18 @@ rest_command:
     content_type: "application/json"
     timeout: 30
 
-  # On-demand v6.db.transport.rest journey lookup with an explicit departure.
-  # Used by the tomorrow branch of /office so we don't have to wait for the
-  # scheduled poll (and so we can query a departure time outside the default
-  # "now" window). EVA IDs are passed in by the caller — we do NOT hard-code
-  # station names anywhere in URL templates.
+  # On-demand v6.db.transport.rest journey lookup. Used by both live (/office,
+  # /home) and scheduled (/office_tmr) paths. EVA IDs are passed in by the
+  # caller — we do NOT hard-code station names anywhere in URL templates.
   #
-  # departure_iso MUST be naive local time (no TZ suffix, no "Z"). A `+02:00`
-  # suffix gets interpreted as a space inside a URL query string (standard
-  # application/x-www-form-urlencoded behaviour) and breaks the hafas-client
-  # parser; v6 then silently returns an empty `journeys: []`.
+  # departure_iso is optional. When set, MUST be naive local time (no TZ
+  # suffix, no "Z") — a `+02:00` suffix gets interpreted as a space inside a
+  # URL query string (standard application/x-www-form-urlencoded behaviour)
+  # and breaks the hafas-client parser; v6 then silently returns an empty
+  # `journeys: []`. Pass an empty string (or omit) to query "now", which
+  # avoids the TZ-parsing ambiguity entirely for live commands.
   db_journeys_lookup:
-    url: "https://v6.db.transport.rest/journeys?from={{ from_eva }}&to={{ to_eva }}&departure={{ departure_iso }}&results=3"
+    url: "https://v6.db.transport.rest/journeys?from={{ from_eva }}&to={{ to_eva }}&results=3{% if departure_iso %}&departure={{ departure_iso }}{% endif %}"
     method: GET
     timeout: 20
 
@@ -477,20 +477,20 @@ automation:
       - service: input_boolean.turn_off
         target:
           entity_id: input_boolean.commute_return_alerts
-      - variables:
-          departure_iso: "{{ now().strftime('%Y-%m-%dT%H:%M:%S') }}"
+      # Live path — omit `departure` (empty string) so v6 uses "now" directly
+      # and we avoid the naive-local-vs-UTC interpretation ambiguity.
       - service: rest_command.db_journeys_lookup
         data:
           from_eva: "8005292"
           to_eva: "8003336"
-          departure_iso: "{{ departure_iso }}"
+          departure_iso: ""
         response_variable: solln_resp
         continue_on_error: true
       - service: rest_command.db_journeys_lookup
         data:
           from_eva: "8000261"
           to_eva: "8003336"
-          departure_iso: "{{ departure_iso }}"
+          departure_iso: ""
         response_variable: hbf_resp
         continue_on_error: true
       - variables:
@@ -692,20 +692,19 @@ automation:
       - service: input_boolean.turn_off
         target:
           entity_id: input_boolean.commute_outbound_alerts
-      - variables:
-          departure_iso: "{{ now().strftime('%Y-%m-%dT%H:%M:%S') }}"
+      # Live path — omit `departure` so v6 uses "now".
       - service: rest_command.db_journeys_lookup
         data:
           from_eva: "8003336"
           to_eva: "8005292"
-          departure_iso: "{{ departure_iso }}"
+          departure_iso: ""
         response_variable: solln_resp
         continue_on_error: true
       - service: rest_command.db_journeys_lookup
         data:
           from_eva: "8003336"
           to_eva: "8000261"
-          departure_iso: "{{ departure_iso }}"
+          departure_iso: ""
         response_variable: hbf_resp
         continue_on_error: true
       - variables:
